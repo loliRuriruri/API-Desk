@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "API Desk",
+  "version": "0.1.0",
+  "identifier": "com.apidesk.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "API Desk",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src ipc: http://ipc.localhost",
+      "devCsp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "API Desk",
+    "copyright": "© 2026 API Desk. All rights reserved.",
+    "shortDescription": "API 키와 사용량을 한곳에서 관리하는 로컬 우선 데스크톱 앱",
+    "longDescription": "API Desk는 API 키·계정 쿼터·사용량을 한곳에서 관리하는 로컬 우선 데스크톱 앱입니다. 키는 Stronghold 볼트에 암호화해 저장하고, Codex·Grok·Antigravity·OpenCode Go·OpenRouter 등의 사용량을 모니터링하며, 트레이 상주·미니 창·임계치 알림을 제공합니다. 모든 데이터는 사용자 PC에만 저장됩니다.",
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "languages": ["Korean"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/installer.ico",
+        "uninstallerIcon": "icons/installer.ico",
+        "installerHooks": "installer-hooks.nsh",
+        "sidebarImage": "icons/installer-sidebar.bmp"
+      }
+    }
+  },
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:apidb.db"]
+    }
+  }
+}
