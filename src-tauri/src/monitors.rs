@@ -742,38 +742,113 @@ fn run_grok_build_billing(timeout_ms: u64) -> Option<Value> {
     result
 }
 
-fn find_antigravity_endpoint() -> Option<(String, u16, String)> {
-    let log_path = appdata_dir()?.join("Antigravity").join("logs").join("main.log");
-    let content = std::fs::read_to_string(log_path).ok()?;
-    let mut csrf: Option<String> = None;
-    let mut port: Option<u16> = None;
-    for line in content.lines().rev() {
-        if csrf.is_none() {
-            if let Some(index) = line.find("--csrf_token") {
-                let rest = line[index + "--csrf_token".len()..].trim_start();
-                let token: String = rest
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-                    .collect();
-                if !token.is_empty() {
-                    csrf = Some(token);
-                }
+fn antigravity_endpoint_candidates() -> Vec<(String, u16, String)> {
+    let Some(log_path) = appdata_dir().map(|dir| dir.join("Antigravity").join("logs").join("main.log"))
+    else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(log_path) else {
+        return Vec::new();
+    };
+    parse_antigravity_endpoints(&content)
+}
+
+fn parse_antigravity_endpoints(content: &str) -> Vec<(String, u16, String)> {
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut spawns: Vec<(usize, String)> = Vec::new();
+    let mut ports: Vec<(usize, u16)> = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if let Some(at) = line.find("--csrf_token") {
+            let rest = line[at + "--csrf_token".len()..].trim_start();
+            let token: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !token.is_empty() {
+                spawns.push((index, token));
             }
         }
-        if port.is_none() {
-            if let Some(index) = line.find("https://127.0.0.1:") {
-                let rest = &line[index + "https://127.0.0.1:".len()..];
-                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(value) = digits.parse::<u16>() {
-                    port = Some(value);
-                }
+        if let Some(at) = line.find("https://127.0.0.1:") {
+            let rest = &line[at + "https://127.0.0.1:".len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(port) = digits.parse::<u16>() {
+                ports.push((index, port));
             }
         }
-        if csrf.is_some() && port.is_some() {
+    }
+
+    let mut candidates: Vec<(u16, String)> = Vec::new();
+    for (spawn_index, token) in spawns.iter().rev() {
+        let next_spawn = spawns
+            .iter()
+            .map(|(index, _)| *index)
+            .filter(|index| index > spawn_index)
+            .min()
+            .unwrap_or(usize::MAX);
+        let mut block_ports: Vec<u16> = ports
+            .iter()
+            .filter(|(index, _)| *index > *spawn_index && *index < next_spawn)
+            .map(|(_, port)| *port)
+            .collect();
+        block_ports.sort_unstable();
+        block_ports.dedup();
+        for port in block_ports.into_iter().rev() {
+            if candidates.iter().any(|(known, _)| *known == port) {
+                continue;
+            }
+            candidates.push((port, token.clone()));
+            if candidates.len() >= 6 {
+                break;
+            }
+        }
+        if candidates.len() >= 6 {
             break;
         }
     }
-    Some(("https://127.0.0.1".into(), port?, csrf?))
+
+    candidates
+        .into_iter()
+        .map(|(port, token)| ("https://127.0.0.1".to_string(), port, token))
+        .collect()
+}
+
+fn find_antigravity_endpoint() -> Option<(String, u16, String)> {
+    antigravity_endpoint_candidates().into_iter().next()
+}
+
+fn antigravity_process_csrf() -> Option<String> {
+    let script = r#"
+$ProgressPreference = 'SilentlyContinue'
+$p = Get-CimInstance Win32_Process -Filter "Name='language_server.exe'" | Select-Object -First 1
+if ($p -and $p.CommandLine) {
+  $i = $p.CommandLine.IndexOf('--csrf_token')
+  if ($i -ge 0) {
+    $rest = $p.CommandLine.Substring($i + 12).TrimStart()
+    ($rest -split '\s+')[0]
+  }
+}
+"#;
+    let output = run_powershell(script).ok()?;
+    let token = output.trim().to_string();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+fn tcp_alive(port: u16) -> bool {
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    TcpStream::connect_timeout(&address, std::time::Duration::from_millis(400)).is_ok()
+}
+
+fn antigravity_endpoint_live() -> bool {
+    antigravity_endpoint_candidates()
+        .into_iter()
+        .take(4)
+        .any(|(_, port, _)| tcp_alive(port))
 }
 
 fn opencode_candidate_dirs() -> Vec<PathBuf> {
@@ -1244,7 +1319,7 @@ pub fn monitor_probe() -> Vec<MonitorProbe> {
     let codex = codex_auth_path().map(|path| path.exists()).unwrap_or(false);
     let grok = grok_token().is_some();
     let grok_build = grok_cli_path().is_some();
-    let antigravity = find_antigravity_endpoint().is_some();
+    let antigravity = antigravity_endpoint_live();
     let opencode_db = opencode_db_path();
     let opencode_auth = opencode_auth_path();
     let opencode = opencode_db.is_some() || opencode_auth.is_some();
@@ -1284,9 +1359,9 @@ pub fn monitor_probe() -> Vec<MonitorProbe> {
             label: "Antigravity".into(),
             available: antigravity,
             detail: if antigravity {
-                "로컬 language_server 연결 정보 확인됨".into()
+                "Antigravity 로컬 API 응답 확인".into()
             } else {
-                "Antigravity가 실행 중이 아니거나 로그를 찾을 수 없음".into()
+                "Antigravity가 실행 중이 아니거나 로컬 API가 응답하지 않습니다".into()
             },
         },
         MonitorProbe {
@@ -1660,28 +1735,74 @@ fn remember_antigravity_account(status: &Value) -> Vec<AntigravityAccount> {
 }
 
 async fn refresh_antigravity() -> Result<MonitorOutcome, AppError> {
-    let (base, port, csrf) = match find_antigravity_endpoint() {
-        Some(endpoint) => endpoint,
-        None => {
-            return Ok(unavailable(
-                "antigravity",
-                "Antigravity가 실행 중이 아니거나 로그를 찾을 수 없습니다",
-            ))
-        }
-    };
+    let log_candidates = antigravity_endpoint_candidates();
+    if log_candidates.is_empty() {
+        return Err(AppError::Network(
+            "Antigravity 로그에서 로컬 API 주소를 찾을 수 없습니다 · Antigravity를 실행한 뒤 다시 조회하세요"
+                .into(),
+        ));
+    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(LOCAL_TIMEOUT_MS))
         .danger_accept_invalid_certs(true)
         .build()
         .map_err(|e| AppError::Network(e.to_string()))?;
 
-    let status = antigravity_rpc(&client, &base, port, &csrf, ANTIGRAVITY_STATUS_RPC).await?;
-    let quota = antigravity_rpc(&client, &base, port, &csrf, ANTIGRAVITY_QUOTA_RPC)
+    // The running language server rotates its csrf token on every restart and the
+    // token is not always written to main.log, so read it from the process itself.
+    let process_csrf = tauri::async_runtime::spawn_blocking(antigravity_process_csrf)
         .await
-        .ok();
-    let groups = quota
-        .as_ref()
-        .map(parse_antigravity_quota_groups);
+        .ok()
+        .flatten();
+
+    let ports: Vec<u16> = log_candidates
+        .iter()
+        .map(|(_, port, _)| *port)
+        .collect();
+    let (alive, rest): (Vec<u16>, Vec<u16>) = ports.into_iter().partition(|port| tcp_alive(*port));
+    let ordered: Vec<u16> = alive.into_iter().chain(rest).take(4).collect();
+
+    let mut endpoint: Option<(u16, String, Value)> = None;
+    'outer: for port in ordered {
+        let mut tokens: Vec<String> = Vec::new();
+        if let Some(token) = process_csrf.as_ref() {
+            tokens.push(token.clone());
+        }
+        if let Some((_, _, token)) = log_candidates.iter().find(|(_, known, _)| *known == port) {
+            if !tokens.contains(token) {
+                tokens.push(token.clone());
+            }
+        }
+        for token in tokens {
+            match antigravity_rpc(&client, "https://127.0.0.1", port, &token, ANTIGRAVITY_STATUS_RPC)
+                .await
+            {
+                Ok(status) => {
+                    endpoint = Some((port, token, status));
+                    break 'outer;
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    let Some((port, csrf, status)) = endpoint else {
+        return Err(AppError::Network(
+            "Antigravity가 실행 중이 아니거나 로컬 API가 응답하지 않습니다 · Antigravity를 실행한 뒤 다시 조회하세요"
+                .into(),
+        ));
+    };
+
+    let quota = antigravity_rpc(
+        &client,
+        "https://127.0.0.1",
+        port,
+        &csrf,
+        ANTIGRAVITY_QUOTA_RPC,
+    )
+    .await
+    .ok();
+    let groups = quota.as_ref().map(parse_antigravity_quota_groups);
 
     let mut outcome = parse_antigravity_status(&status, groups.as_ref());
     if let Some(details) = outcome.details.as_mut() {
@@ -1791,6 +1912,25 @@ fn iso_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairs_antigravity_csrf_with_ports_newest_first() {
+        let log = "\
+[info] Host bridge server listening on http://127.0.0.1:9000
+Spawning: language_server.exe --csrf_token AAA-111
+[info] [Auto-Restart] Port changed! Reloading all windows with URL: https://127.0.0.1:9001/
+[info]   Local:       https://127.0.0.1:9001/
+Spawning: language_server.exe --csrf_token BBB-222
+[info] [Auto-Restart] Port changed! Reloading all windows with URL: https://127.0.0.1:9002/
+[info]   Local:       https://127.0.0.1:9002/
+";
+        let candidates = parse_antigravity_endpoints(log);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].1, 9002);
+        assert_eq!(candidates[0].2, "BBB-222");
+        assert_eq!(candidates[1].1, 9001);
+        assert_eq!(candidates[1].2, "AAA-111");
+    }
 
     #[test]
     fn parses_codex_epoch_reset_at() {

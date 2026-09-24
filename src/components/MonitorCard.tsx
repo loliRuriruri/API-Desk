@@ -102,15 +102,15 @@ export function MonitorCard({
 
   const tone: "ok" | "warn" | "danger" | "muted" =
     remaining === null ? "muted" : remaining >= 60 ? "ok" : remaining >= 30 ? "warn" : "danger";
-  const statusLabel = snapshot
+  const snapshotStatusLabel = snapshot
     ? snapshot.status === "ok"
       ? "정상"
       : snapshot.status === "unavailable"
         ? "사용 불가"
         : "오류"
-    : available
-      ? "준비됨"
-      : "미설정";
+    : null;
+  const statusLabel = !available ? "사용 불가" : snapshotStatusLabel ?? "준비됨";
+  const showStatusBadge = !available || snapshot === null || snapshot.status !== "ok";
 
   return (
     <div className={`monitor-card ${compact ? "monitor-card-compact" : ""}`}>
@@ -118,7 +118,7 @@ export function MonitorCard({
         <div className="monitor-title">
           <strong>{label}</strong>
           {remaining !== null ? <Badge tone={tone}>{Math.round(remaining)}%</Badge> : null}
-          {snapshot === null || snapshot.status !== "ok" ? (
+          {showStatusBadge ? (
             <Badge tone={available ? "muted" : "warn"}>{statusLabel}</Badge>
           ) : null}
         </div>
