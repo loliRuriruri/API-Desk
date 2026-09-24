@@ -162,3 +162,23 @@ Laya 대체 스텁(포트 8000 리스너 + 환경변수 덤프)으로 자동 실
 | 포트 | 127.0.0.1:8000 LISTEN 확인 |
 | 미니 창 | Laya [실행 중] [관리] / Device cuda · Port 8000 · PID 58708 · 17s / 인증 무인증 (localhost) + Start/Stop/Restart/Health/상세 렌더 확인 |
 | API Desk 종료(keepAliveOnExit=false) | 자식 프로세스 종료 + 포트 8000 해제 확인 |
+### 9.2. 실제 Laya 스모크 테스트 (2026-09-24, 실측)
+
+설정: C:\Laya\.venv\Scripts\laya-serve.exe · workdir C:\Laya · LAYA_DEVICE=cuda · LAYA_PRELOAD=1 · USE_TF=0 · autoStart=false · keepAlive=true · 저장된 키 없음(무인증)
+
+| # | 검증 항목 | 결과 | 증거 |
+| --- | --- | --- | --- |
+| 1 | Mini Start | 통과 | 미니 Start 클릭 → 프로세스 생성, 포트 8000 LISTEN |
+| 2 | Starting → Running 전환 | 통과 | t+2s [시작 중] PID 49472 · 5s → t+14s [실행 중] (포트 LISTEN) |
+| 3 | PID / uptime 표시 | 통과 | 미니 카드 PID 49472 · 5s → PID 9676 · 22s → PID 1008 · 1m 12s |
+| 4 | GET /health HTTP 200 | 통과 | {"status":"ok","loaded":["english","multilingual","typed-decisions"],"device":"cuda"} |
+| 5 | device=cuda 확인 | 통과 | /health 응답의 device 필드 + 카드 표시 |
+| 6 | Main/Mini 상태 동기화 | 통과 | (Vault 잠금 해제 상태에서) 메인 로컬 서비스 페이지와 미니가 동일 상태/PID(44736)·인증 모드 표시. 미니는 이후 Start/Restart/Stop 변화를 실시간 반영(이벤트+폴링) |
+| 7 | Restart 성공 | 통과 | 관리 PID 49472 → 9676, 포트 소유자 82576 → 42868 (재바인드 확인) |
+| 8 | Stop 후 포트 해제 | 통과 | Stop 후 port 8000 free (외부 프로세스 Stop도 동일) |
+| 9 | keepAlive=true 유지 | 통과 | API Desk 정상 종료(quit_app) 후에도 Laya 생존: 포트 LISTEN + /health 200, 재실행 시 외부 프로세스(PID 1008)로 감지 |
+
+#### 발견·수정한 결함 (테스트 중)
+- **Restart 경쟁 조건**: 기존 구현은 프로세스 종료 후 700ms만 기다리고 새 프로세스를 띄워, 이전 Laya가 포트를 놓기 전에 새 인스턴스가 바인드에 실패했다(첫 시도에서 중지됨으로 남음).
+- 수정: wait_for_port_free()로 종료 후 포트 해제를 최대 6~8초 대기한 뒤 시작하도록 변경. 또한 start/stop/restart/autostart를 async + spawn_blocking으로 옮겨 대기 중 UI가 멈추지 않게 했다.
+- 재검증: Restart가 새 PID로 정상 기동(위 #7), cargo 58 / vitest 61 / lint 0 / tsc 통과.

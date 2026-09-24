@@ -378,6 +378,18 @@ fn port_owner_pid(port: u16) -> Option<u32> {
     parse_port_owner(&text, port)
 }
 
+/// 프로세스를 종료한 뒤 포트가 실제로 해제될 때까지 기다린다(재시작 경쟁 방지).
+fn wait_for_port_free(port: u16, timeout_ms: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    while Instant::now() < deadline {
+        if port_owner_pid(port).is_none() && !tcp_alive(port) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    port_owner_pid(port).is_none() && !tcp_alive(port)
+}
+
 fn tcp_alive(port: u16) -> bool {
     use std::net::{Ipv4Addr, SocketAddr, TcpStream};
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -792,7 +804,7 @@ fn stop_service(
     }
     if let Some(pid) = killed_pid {
         state.push_log(id, format!("[api-desk] 서비스 중지 (PID {pid})"));
-        std::thread::sleep(Duration::from_millis(600));
+        wait_for_port_free(config.port, 6_000);
     }
     let statuses = build_status(&app, &state, &vault);
     statuses
@@ -817,42 +829,53 @@ fn restart_service(
     if let Some(pid) = port_owner_pid(config.port) {
         kill_tree(pid);
     }
-    std::thread::sleep(Duration::from_millis(700));
+    if !wait_for_port_free(config.port, 8_000) {
+        return Err(AppError::InvalidRequest(format!(
+            "포트 {}이(가) 아직 해제되지 않았습니다. 잠시 후 다시 시도하세요",
+            config.port
+        )));
+    }
     start_service(app, state, vault, id)
 }
 
 #[tauri::command]
-pub fn local_service_start(
-    app: AppHandle,
-    state: State<'_, LocalServicesState>,
-    vault: State<'_, VaultState>,
-    id: String,
-) -> Result<LocalServiceStatus, AppError> {
-    let status = start_service(&app, &state, &vault, &id)?;
+pub async fn local_service_start(app: AppHandle, id: String) -> Result<LocalServiceStatus, AppError> {
+    let handle = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<LocalServicesState>();
+        let vault = handle.state::<VaultState>();
+        start_service(&handle, &state, &vault, &id)
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("시작 작업 실패: {e}")))??;
     emit_status_changed(&app);
     Ok(status)
 }
 
 #[tauri::command]
-pub fn local_service_stop(
-    app: AppHandle,
-    state: State<'_, LocalServicesState>,
-    vault: State<'_, VaultState>,
-    id: String,
-) -> Result<LocalServiceStatus, AppError> {
-    let status = stop_service(&app, &state, &vault, &id)?;
+pub async fn local_service_stop(app: AppHandle, id: String) -> Result<LocalServiceStatus, AppError> {
+    let handle = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<LocalServicesState>();
+        let vault = handle.state::<VaultState>();
+        stop_service(&handle, &state, &vault, &id)
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("중지 작업 실패: {e}")))??;
     emit_status_changed(&app);
     Ok(status)
 }
 
 #[tauri::command]
-pub fn local_service_restart(
-    app: AppHandle,
-    state: State<'_, LocalServicesState>,
-    vault: State<'_, VaultState>,
-    id: String,
-) -> Result<LocalServiceStatus, AppError> {
-    let status = restart_service(&app, &state, &vault, &id)?;
+pub async fn local_service_restart(app: AppHandle, id: String) -> Result<LocalServiceStatus, AppError> {
+    let handle = app.clone();
+    let status = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<LocalServicesState>();
+        let vault = handle.state::<VaultState>();
+        restart_service(&handle, &state, &vault, &id)
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("재시작 작업 실패: {e}")))??;
     emit_status_changed(&app);
     Ok(status)
 }
@@ -941,20 +964,27 @@ pub fn local_service_clear_api_key(
 }
 
 #[tauri::command]
-pub fn local_service_autostart(
-    app: AppHandle,
-    state: State<'_, LocalServicesState>,
-    vault: State<'_, VaultState>,
-) -> Vec<String> {
-    let mut started = Vec::new();
-    let statuses = build_status(&app, &state, &vault);
-    for status in statuses {
-        if !status.auto_start || status.state != "stopped" || !status.executable_set {
-            continue;
+pub async fn local_service_autostart(app: AppHandle) -> Vec<String> {
+    let handle = app.clone();
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        let state = handle.state::<LocalServicesState>();
+        let vault = handle.state::<VaultState>();
+        let mut started = Vec::new();
+        let statuses = build_status(&handle, &state, &vault);
+        for status in statuses {
+            if !status.auto_start || status.state != "stopped" || !status.executable_set {
+                continue;
+            }
+            if start_service(&handle, &state, &vault, &status.id).is_ok() {
+                started.push(status.id);
+            }
         }
-        if start_service(&app, &state, &vault, &status.id).is_ok() {
-            started.push(status.id);
-        }
+        started
+    })
+    .await
+    .unwrap_or_default();
+    if !started.is_empty() {
+        emit_status_changed(&app);
     }
     started
 }
