@@ -1,6 +1,7 @@
 mod envfile;
 mod error;
 mod export;
+mod gpu_monitor;
 mod http_test;
 mod local_services;
 mod migrations;
@@ -223,6 +224,7 @@ pub fn run() {
         .manage(TrayState::new())
         .manage(LaunchState::new())
         .manage(local_services::LocalServicesState::new())
+        .manage(gpu_monitor::GpuMonitorState::default())
         .setup(|app| {
             let autostart = launched_from_autostart(std::env::args());
             app.state::<LaunchState>()
@@ -320,6 +322,8 @@ pub fn run() {
             local_services::local_service_clear_api_key,
             local_services::local_service_autostart,
             local_services::local_service_login_startup_plan,
+            gpu_monitor::gpu_snapshot,
+            gpu_monitor::gpu_process_details,
         ])
         .run(tauri::generate_context!())
         .expect("error while running API Desk");

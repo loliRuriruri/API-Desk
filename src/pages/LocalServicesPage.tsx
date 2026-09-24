@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../components/Badges";
 import { EmptyState } from "../components/EmptyState";
+import { GpuMonitorPanel } from "../components/GpuMonitorPanel";
 import { useToast } from "../components/ToastProvider";
 import { useAsyncData } from "../hooks/useAsyncData";
 import { errorMessage } from "../lib/errors";
@@ -241,6 +242,8 @@ export function LocalServicesPage() {
           />
         ) : null}
       </section>
+
+      <GpuMonitorPanel />
 
       {statuses.map((status) => {
         const definition = definitionById.get(status.id);

@@ -46,6 +46,7 @@ import {
 } from "./lib/localServices";
 import { persistMonitorOutcome } from "./lib/monitorStore";
 import { MonitorCard } from "./components/MonitorCard";
+import { GpuMiniCard } from "./components/GpuMiniCard";
 import { vaultStatus } from "./lib/vault";
 import { applyTheme, loadSettings, saveSetting } from "./lib/settings";
 import mikuIcon from "./assets/miku-icon.png";
@@ -453,6 +454,11 @@ export function MiniApp() {
               );
             })
           )}
+        </section>
+
+        <section className="mini-section">
+          <h4>GPU · VRAM</h4>
+          <GpuMiniCard onOpenDetail={() => void openMainPage("services")} />
         </section>
 
         <section className="mini-section">

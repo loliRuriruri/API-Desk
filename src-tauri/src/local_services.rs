@@ -224,6 +224,26 @@ impl LocalServicesState {
         Self::default()
     }
 
+    /// GPU 모니터의 서비스 귀속(attribution)용: 현재 API Desk가 관리 중인 서비스 PID 목록.
+    pub fn managed_pids(&self) -> Vec<(String, u32)> {
+        let processes = self.processes.lock().unwrap();
+        processes
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.pid))
+            .collect()
+    }
+
+    /// 서비스별 설정 포트(귀속 보조 신호).
+    pub fn service_ports(&self, app: &AppHandle) -> Vec<(String, String, u16)> {
+        definitions()
+            .into_iter()
+            .filter_map(|def| {
+                let (_, config) = merged_config(app, &def.id).ok()?;
+                Some((def.id, def.label, config.port))
+            })
+            .collect()
+    }
+
     fn push_log(&self, id: &str, line: String) {
         let mut logs = self.logs.lock().unwrap();
         let buffer = logs.entry(id.to_string()).or_default();
@@ -366,6 +386,11 @@ pub fn parse_port_owner(netstat_output: &str, port: u16) -> Option<u32> {
         }
     }
     None
+}
+
+/// 포트 LISTEN 중인 PID(서비스 귀속 보조 신호로도 사용).
+pub fn port_owner(port: u16) -> Option<u32> {
+    port_owner_pid(port)
 }
 
 fn port_owner_pid(port: u16) -> Option<u32> {
