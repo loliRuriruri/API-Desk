@@ -30,6 +30,20 @@ import { onUsageRefresh, onVaultChanged, openMainPage, showMainWindow, notifySet
 import { usageAdapterFor, usageExtraSecretFor } from "./lib/providers/usage";
 import { credentialRemainingPercent } from "./lib/alerts";
 import { usageGauges } from "./lib/monitorGauges";
+import {
+  checkLocalServiceHealth,
+  formatUptime,
+  localServiceStatuses,
+  miniAuthLabel,
+  onLocalServiceStatusChanged,
+  restartLocalService,
+  serviceStateLabel,
+  serviceStateTone,
+  startBlockReason,
+  startLocalService,
+  stopLocalService,
+  type LocalServiceStatus,
+} from "./lib/localServices";
 import { persistMonitorOutcome } from "./lib/monitorStore";
 import { MonitorCard } from "./components/MonitorCard";
 import { vaultStatus } from "./lib/vault";
@@ -52,7 +66,7 @@ function percentLabel(value: number | null): string {
 export function MiniApp() {
   const { notify } = useToast();
   const { data, error, reload } = useAsyncData(async () => {
-    const [status, usage, monitors, probes, credentials, fields, models, agAccounts] =
+    const [status, usage, monitors, probes, credentials, fields, models, agAccounts, services] =
       await Promise.all([
         vaultStatus(),
         listUsageSnapshots(),
@@ -62,11 +76,23 @@ export function MiniApp() {
         listAllCredentialFields(),
         listModels(),
         antigravityAccounts(),
+        localServiceStatuses(),
       ]);
-    return { status, usage, monitors, probes, credentials, fields, models, agAccounts };
+    return {
+      status,
+      usage,
+      monitors,
+      probes,
+      credentials,
+      fields,
+      models,
+      agAccounts,
+      services,
+    };
   }, "mini");
   const [busy, setBusy] = useState<string | null>(null);
   const [modelsOpen, setModelsOpen] = useState(false);
+  const [liveServices, setLiveServices] = useState<LocalServiceStatus[] | null>(null);
   const [alertsOn, setAlertsOn] = useState(true);
   const [alertThreshold, setAlertThreshold] = useState(20);
   const autoRefreshedRef = useRef(false);
@@ -135,6 +161,18 @@ export function MiniApp() {
   useEffect(() => onUsageRefresh(() => reload()), [reload]);
 
   useEffect(() => onVaultChanged(() => reload()), [reload]);
+
+  // 메인 창에서 상태가 바뀌면 즉시 반영(이벤트). 이벤트를 놓치는 경우를 대비해 5초 폴링을 함께 둔다.
+  useEffect(() => onLocalServiceStatusChanged(() => reload()), [reload]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void localServiceStatuses()
+        .then((list) => setLiveServices(list))
+        .catch(() => {});
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const credentialById = useMemo(() => {
     const map = new Map<string, CredentialWithContext>();
@@ -215,6 +253,30 @@ export function MiniApp() {
     }
   };
 
+  const runService = async (label: string, action: () => Promise<unknown>) => {
+    setBusy(label);
+    try {
+      await action();
+      reload();
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const checkServiceHealth = async (service: LocalServiceStatus) => {
+    await runService(`svc-health-${service.id}`, async () => {
+      const result = await checkLocalServiceHealth(service.id);
+      notify(
+        result.ok
+          ? `${service.label} 정상 (HTTP ${result.status}, ${result.latencyMs}ms)`
+          : `${service.label} 응답 없음 또는 오류 (HTTP ${result.status})`,
+        result.ok ? "success" : "error",
+      );
+    });
+  };
+
   const switchAccount = async (account: AntigravityAccount) => {
     setBusy("ag-account");
     try {
@@ -243,6 +305,8 @@ export function MiniApp() {
       setBusy(null);
     }
   };
+
+  const serviceRows = liveServices ?? data?.services ?? [];
 
   const locked = data !== null && data.status.state !== "unlocked";
   const vaultUnlocked = !locked;
@@ -305,6 +369,92 @@ export function MiniApp() {
       ) : null}
 
       <div className="mini-body">
+        <section className="mini-section">
+          <h4>
+            로컬 AI 서비스
+            <span className="stamp"> 메인 창과 상태 동기화</span>
+          </h4>
+          {serviceRows.length === 0 ? (
+            <p className="mini-note">등록된 로컬 서비스가 없습니다</p>
+          ) : (
+            serviceRows.map((service) => {
+              const block = startBlockReason(service);
+              const running = service.state === "running" || service.state === "starting";
+              return (
+                <div key={service.id} className="mini-row mini-row-stack">
+                  <div className="mini-row-main">
+                    <span className="mini-row-title">
+                      {service.label}
+                      <Badge tone={serviceStateTone(service.state)}>
+                        {serviceStateLabel(service.state)}
+                      </Badge>
+                      {service.managed ? <Badge tone="info">관리</Badge> : null}
+                    </span>
+                    <span className="mini-row-sub mono">
+                      Device {service.device} · Port {service.port} · PID{" "}
+                      {service.pid ?? "—"} · {formatUptime(service.uptimeSecs)}
+                    </span>
+                    <span className="mini-row-sub mono">인증 {miniAuthLabel(service)}</span>
+                  </div>
+                  <div className="mini-service-actions">
+                    <button
+                      type="button"
+                      className="button button-small button-primary"
+                      disabled={busy !== null || running || block !== null}
+                      title={block ?? undefined}
+                      onClick={() =>
+                        void runService(`svc-start-${service.id}`, () =>
+                          startLocalService(service.id),
+                        )
+                      }
+                    >
+                      Start
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-small"
+                      disabled={busy !== null || (!running && !service.pid)}
+                      onClick={() =>
+                        void runService(`svc-stop-${service.id}`, () => stopLocalService(service.id))
+                      }
+                    >
+                      Stop
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-small"
+                      disabled={busy !== null || block !== null}
+                      onClick={() =>
+                        void runService(`svc-restart-${service.id}`, () =>
+                          restartLocalService(service.id),
+                        )
+                      }
+                    >
+                      Restart
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-small"
+                      disabled={busy !== null}
+                      onClick={() => void checkServiceHealth(service)}
+                    >
+                      Health
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-small button-ghost"
+                      onClick={() => void openMainPage("services")}
+                    >
+                      상세
+                    </button>
+                  </div>
+                  {block ? <span className="mini-note">{block}</span> : null}
+                </div>
+              );
+            })
+          )}
+        </section>
+
         <section className="mini-section">
           <h4>계정 쿼터</h4>
           {(data?.probes ?? []).map((probe) => (

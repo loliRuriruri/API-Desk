@@ -2,6 +2,7 @@ mod envfile;
 mod error;
 mod export;
 mod http_test;
+mod local_services;
 mod migrations;
 mod model_import;
 mod monitors;
@@ -139,6 +140,7 @@ fn quit_app(app: &tauri::AppHandle) {
     let handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(150));
+        local_services::shutdown(&handle);
         handle.exit(0);
         std::thread::sleep(std::time::Duration::from_millis(4_000));
         std::process::exit(0);
@@ -220,6 +222,7 @@ pub fn run() {
         .manage(VaultState::new())
         .manage(TrayState::new())
         .manage(LaunchState::new())
+        .manage(local_services::LocalServicesState::new())
         .setup(|app| {
             let autostart = launched_from_autostart(std::env::args());
             app.state::<LaunchState>()
@@ -304,6 +307,19 @@ pub fn run() {
             monitors::monitor_antigravity_save_current,
             monitors::monitor_antigravity_switch_account,
             monitors::monitor_antigravity_delete_account,
+            local_services::local_service_definitions,
+            local_services::local_service_configs,
+            local_services::local_service_save_config,
+            local_services::local_service_status,
+            local_services::local_service_logs,
+            local_services::local_service_start,
+            local_services::local_service_stop,
+            local_services::local_service_restart,
+            local_services::local_service_health,
+            local_services::local_service_set_api_key,
+            local_services::local_service_clear_api_key,
+            local_services::local_service_autostart,
+            local_services::local_service_login_startup_plan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running API Desk");

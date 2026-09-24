@@ -5,6 +5,7 @@ import { ToastProvider, useToast } from "./components/ToastProvider";
 import { ApisPage } from "./pages/ApisPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ImportPage } from "./pages/ImportPage";
+import { LocalServicesPage } from "./pages/LocalServicesPage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
@@ -41,6 +42,7 @@ import {
   credentialRemainingPercent,
   monitorRemainingPercent,
 } from "./lib/alerts";
+import { autostartLocalServices } from "./lib/localServices";
 import { refreshStaleUsageSnapshots } from "./lib/usageRefresh";
 import type { SearchResult } from "./types/domain";
 
@@ -55,6 +57,7 @@ const PAGE_TITLES: Record<PageKey, string> = {
   dashboard: "대시보드",
   apis: "API 관리",
   models: "모델",
+  services: "로컬 서비스",
   projects: "프로젝트",
   settings: "설정",
   import: "텍스트 가져오기",
@@ -103,6 +106,7 @@ function MainApp() {
   const alertedRef = useRef<Set<string>>(new Set());
   const miniOpenedRef = useRef(false);
   const usageRefreshedRef = useRef(false);
+  const localServicesStartedRef = useRef(false);
 
   useEffect(() => {
     void notifyVaultChanged();
@@ -213,6 +217,14 @@ function MainApp() {
       }),
     [],
   );
+
+  // 로컬 서비스 자동 실행: Vault 잠금 여부와 무관하게 시도한다.
+  // (키를 저장해 둔 서비스는 백엔드가 잠금 상태에서 차단하고, 무인증 모드는 실행된다.)
+  useEffect(() => {
+    if (localServicesStartedRef.current) return;
+    localServicesStartedRef.current = true;
+    void autostartLocalServices().catch(() => {});
+  }, []);
 
   useEffect(
     () =>
@@ -367,6 +379,8 @@ function MainApp() {
         );
       case "models":
         return <ModelsPage key={`models-${route.nonce}`} />;
+      case "services":
+        return <LocalServicesPage key={`services-${route.nonce}`} />;
       case "projects":
         if (route.focusKind === "project-detail" && route.focusId) {
           return (

@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   color-scheme: dark;
   --bg: #0f1a1c;
   --bg-panel: #162326;
@@ -2410,4 +2410,123 @@ kbd {
 
 .monitor-cap .input {
   width: 88px;
+}
+/* ---------- local services page ---------- */
+
+.service-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.service-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.service-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.service-info {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.service-info > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.service-info .mono {
+  overflow-wrap: anywhere;
+}
+
+.service-env {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow-wrap: anywhere;
+}
+
+.api-key-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.api-key-row .input {
+  flex: 1 1 auto;
+}
+
+.service-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.service-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.log-view {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+[data-theme="frutiger-aero"] .service-info,
+[data-theme="frutiger-aero"] .service-settings {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+[data-theme="frutiger-aero"] .log-view {
+  background: rgba(4, 34, 56, 0.45);
+}
+/* ---------- mini local services ---------- */
+
+.mini-row-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.mini-service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mini-service-actions .button {
+  min-height: 24px;
+  padding: 2px 9px;
+  font-size: 10.5px;
+}
+
+[data-theme="frutiger-aero"] .mini-service-actions .button {
+  box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.5);
 }
