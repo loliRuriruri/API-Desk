@@ -247,7 +247,51 @@ fn rows_from_db(app: &AppHandle) -> Vec<renderer::DisplayApiRow> {
     renderer::prioritize_api_rows(rows)
 }
 
+/// 시스템 RAM 사용량(전체/사용). Windows GlobalMemoryStatusEx.
+#[cfg(windows)]
+fn system_memory() -> (Option<u64>, Option<u64>) {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut c_void) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status as *mut _ as *mut c_void) };
+    if ok == 0 || status.total_phys == 0 {
+        return (None, None);
+    }
+    (Some(status.total_phys.saturating_sub(status.avail_phys)), Some(status.total_phys))
+}
+
+#[cfg(not(windows))]
+fn system_memory() -> (Option<u64>, Option<u64>) {
+    (None, None)
+}
+
 pub(crate) fn build_snapshot(app: &AppHandle) -> TurzxDisplaySnapshot {
+    let (ram_used, ram_total) = system_memory();
     let gpu_snapshot = crate::gpu_monitor::cached_snapshot(app, 2_000);
     let gpu = match gpu_snapshot.gpus.first() {
         Some(info) => renderer::DisplayGpu {
@@ -257,6 +301,8 @@ pub(crate) fn build_snapshot(app: &AppHandle) -> TurzxDisplaySnapshot {
             vram_total_bytes: info.memory_total_bytes,
             temperature_c: info.temperature_c,
             power_watts: info.power_watts,
+            ram_used_bytes: ram_used,
+            ram_total_bytes: ram_total,
         },
         None => renderer::DisplayGpu::default(),
     };

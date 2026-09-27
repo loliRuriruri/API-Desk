@@ -17,13 +17,17 @@ pub const COLOR_WARN: (u8, u8, u8) = (245, 190, 80);
 pub const COLOR_DANGER: (u8, u8, u8) = (235, 96, 118);
 pub const COLOR_ACCENT: (u8, u8, u8) = (0, 229, 255);
 pub const COLOR_BAR_BG: (u8, u8, u8) = (40, 52, 66);
+/// 플랫 카드 표면(참조 CSS theme-surface).
+pub const COLOR_SURFACE: (u8, u8, u8) = (18, 24, 32);
+/// 카드 테두리(참조 CSS theme-border).
+pub const COLOR_BORDER: (u8, u8, u8) = (40, 52, 66);
 pub const COLOR_SEPARATOR: (u8, u8, u8) = (44, 58, 74);
 /// 10~20% 남음(경고) 단계 색.
 pub const COLOR_ORANGE: (u8, u8, u8) = (250, 150, 74);
-/// 값 텍스트 뒤에 까는 칩(채움 경계와 무관하게 대비 보장).
-const COLOR_GAUGE_CHIP: (u8, u8, u8) = (13, 18, 24);
-/// 밝은 채움 위에 얹는 어두운 글자색.
-const COLOR_ON_FILL: (u8, u8, u8) = (9, 13, 17);
+/// 값 텍스트 뒤에 까는 칩(채움/카드 어디서든 대비 보장).
+const COLOR_GAUGE_CHIP: (u8, u8, u8) = (6, 9, 13);
+/// 칩 테두리(채움 위에서도 칩 경계가 보이게).
+const COLOR_CHIP_BORDER: (u8, u8, u8) = (86, 104, 126);
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 pub const WORKLOAD_LIMIT: usize = 3;
@@ -43,6 +47,10 @@ pub struct DisplayGpu {
     pub vram_total_bytes: Option<u64>,
     pub temperature_c: Option<u32>,
     pub power_watts: Option<f64>,
+    #[serde(default)]
+    pub ram_used_bytes: Option<u64>,
+    #[serde(default)]
+    pub ram_total_bytes: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -76,6 +84,8 @@ pub struct DisplayApiRow {
     pub amount_text: Option<String>,
     pub status: String,
     pub age_secs: i64,
+    pub primary_reset_in_secs: Option<i64>,
+    pub secondary_reset_in_secs: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -144,6 +154,42 @@ fn remaining_from_used(used: Option<f64>) -> Option<f64> {
 }
 
 /// 저장된 monitor_snapshots(details_json)를 표시용 행으로 정규화한다.
+fn value_secs(value: Option<&Value>, keys: &[&str], now_secs: i64) -> Option<i64> {
+    let value = value?;
+    for key in keys {
+        if let Some(entry) = value.get(*key) {
+            if let Some(number) = entry.as_i64() {
+                if key.eq_ignore_ascii_case("resetInSec") || key.to_lowercase().contains("insec") {
+                    return Some(number.max(0));
+                }
+                if number > 1_000_000_000 {
+                    return Some((number - now_secs).max(0));
+                }
+                return Some(number.max(0));
+            }
+            if let Some(text) = entry.as_str() {
+                if let Some(at) = crate::monitors::parse_rfc3339_secs(text) {
+                    return Some((at - now_secs).max(0));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// details의 리셋 시각/잔여 초에서 남은 초를 계산한다(테스트용 now 주입).
+#[allow(dead_code)]
+pub fn reset_in_secs_from(value: &Value, keys: &[&str], now: i64) -> Option<i64> {
+    value_secs(Some(value), keys, now)
+}
+
 pub fn normalize_monitor_row(monitor: &str, details_json: Option<&str>) -> Option<DisplayApiRow> {
     let details: Value = details_json.and_then(|text| serde_json::from_str(text).ok())?;
     let mut row = DisplayApiRow {
@@ -162,6 +208,16 @@ pub fn normalize_monitor_row(monitor: &str, details_json: Option<&str>) -> Optio
                 remaining_from_used(number(details.get("primaryUsedPercent")));
             row.secondary_remaining_percent =
                 remaining_from_used(number(details.get("secondaryUsedPercent")));
+            row.primary_reset_in_secs = value_secs(
+                Some(&details),
+                &["primaryResetAt", "primaryResetInSec"],
+                now_secs(),
+            );
+            row.secondary_reset_in_secs = value_secs(
+                Some(&details),
+                &["secondaryResetAt", "secondaryResetInSec"],
+                now_secs(),
+            );
         }
         "grok" => {
             row.primary_label = "Mo".into();
@@ -175,29 +231,96 @@ pub fn normalize_monitor_row(monitor: &str, details_json: Option<&str>) -> Optio
         "grok-build" => {
             row.primary_label = "Wk".into();
             row.primary_remaining_percent = number(details.get("remainingPercent"));
+            row.primary_reset_in_secs =
+                value_secs(Some(&details), &["periodEnd", "resetAt"], now_secs());
         }
         "antigravity" => {
-            row.primary_label = "Gem".into();
-            row.secondary_label = "Cl".into();
-            row.primary_remaining_percent = number(details.get("geminiRemainingPercent"));
-            row.secondary_remaining_percent = number(details.get("claudeRemainingPercent"));
+            let now = now_secs();
+            let mut weekly: Vec<(String, f64, Option<i64>)> = Vec::new();
+            if let Some(groups) = details.get("quotaGroups").and_then(Value::as_array) {
+                for group in groups {
+                    let name = group
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let label = if name.contains("claude") { "Cl" } else { "Gem" };
+                    if let Some(remaining) =
+                        group.get("weeklyRemainingPercent").and_then(Value::as_f64)
+                    {
+                        weekly.push((
+                            label.to_string(),
+                            remaining,
+                            value_secs(Some(group), &["weeklyResetAt"], now),
+                        ));
+                    }
+                }
+            }
+            if weekly.is_empty() {
+                // quotaGroups가 없으면 상위 필드로 폴백(리셋 없음).
+                row.primary_label = "Gem".into();
+                row.secondary_label = "Cl".into();
+                row.primary_remaining_percent = number(details.get("geminiRemainingPercent"));
+                row.secondary_remaining_percent = number(details.get("claudeRemainingPercent"));
+            } else {
+                // 데스크탑 앱의 기본 그룹인 Gemini 주간을 primary로 노출한다(Claude는 secondary).
+                let primary_index = weekly
+                    .iter()
+                    .position(|(label, _, _)| label == "Gem")
+                    .unwrap_or(0);
+                let (label, remaining, reset) = weekly[primary_index].clone();
+                row.primary_label = label;
+                row.primary_remaining_percent = Some(remaining);
+                row.primary_reset_in_secs = reset;
+                if let Some((label, remaining, reset)) =
+                    weekly.iter().enumerate().find(|(index, _)| *index != primary_index).map(|(_, entry)| entry)
+                {
+                    row.secondary_label = label.clone();
+                    row.secondary_remaining_percent = Some(*remaining);
+                    row.secondary_reset_in_secs = *reset;
+                }
+            }
         }
         "opencode" => {
-            // 롤링/주간/월간 중 가장 빠듯한(남은 값이 가장 작은) 두 창을 보여준다.
-            let mut windows: Vec<(String, Option<f64>)> = Vec::new();
-            for (key, label) in [("rolling", "Ro"), ("weekly", "Wk"), ("monthly", "Mo")] {
-                let used = details.get(key).and_then(|entry| entry.get("percent"));
-                windows.push((label.to_string(), remaining_from_used(number(used))));
+            // 주간(Wk) 창을 primary로 노출하고 리셋 시각을 함께 담는다.
+            let now = now_secs();
+            let window = |key: &str| -> Option<(Option<f64>, Option<i64>)> {
+                let entry = details.get(key)?;
+                Some((
+                    remaining_from_used(number(entry.get("percent"))),
+                    value_secs(Some(entry), &["resetsAt", "resetInSec"], now),
+                ))
+            };
+            let mut others: Vec<(String, f64, Option<i64>)> = Vec::new();
+            for (key, label) in [("rolling", "Ro"), ("monthly", "Mo")] {
+                if let Some((Some(remaining), reset)) = window(key) {
+                    others.push((label.to_string(), remaining, reset));
+                }
             }
-            windows.retain(|(_, remaining)| remaining.is_some());
-            windows.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            if let Some((label, remaining)) = windows.first() {
-                row.primary_label = label.clone();
-                row.primary_remaining_percent = *remaining;
+            match window("weekly") {
+                Some((Some(remaining), reset)) => {
+                    row.primary_label = "Wk".into();
+                    row.primary_remaining_percent = Some(remaining);
+                    row.primary_reset_in_secs = reset;
+                }
+                _ => {
+                    if let Some((label, remaining, reset)) = others
+                        .iter()
+                        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    {
+                        row.primary_label = label.clone();
+                        row.primary_remaining_percent = Some(*remaining);
+                        row.primary_reset_in_secs = *reset;
+                    }
+                }
             }
-            if let Some((label, remaining)) = windows.get(1) {
+            if let Some((label, remaining, reset)) = others
+                .iter()
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            {
                 row.secondary_label = label.clone();
-                row.secondary_remaining_percent = *remaining;
+                row.secondary_remaining_percent = Some(*remaining);
+                row.secondary_reset_in_secs = *reset;
             }
         }
         _ => return None,
@@ -241,6 +364,8 @@ pub fn normalize_usage_row(
         amount_text: amount_text(used, limit, currency),
         status: "ok".into(),
         age_secs: 0,
+        primary_reset_in_secs: None,
+        secondary_reset_in_secs: None,
     }
 }
 
@@ -294,6 +419,7 @@ pub struct ApiGaugeRow {
     pub state: ApiGaugeState,
     pub stale: bool,
     pub amount_text: Option<String>,
+    pub reset_in_secs: Option<i64>,
 }
 
 /// 남은 비율 -> 게이지 상태(스펙 §4). 0%는 실제 소진일 때만 LIMIT.
@@ -316,6 +442,16 @@ pub fn gauge_fill_width(row_width: i32, remaining: Option<f64>) -> i32 {
 }
 
 /// 우측 값 텍스트(스펙 §6/§7): 0%는 LIMIT, 인증 실패는 AUTH, 오래되면 stale.
+/// 리셋까지 남은 시간을 짧게: 1일 이상 "Nd", 미만 "Nh".
+pub fn format_reset_in(secs: Option<i64>) -> String {
+    match secs {
+        None => String::new(),
+        Some(value) if value <= 0 => String::new(),
+        Some(value) if value >= 86_400 => format!("{}d", value / 86_400),
+        Some(value) => format!("{}h", (value + 3_599) / 3_600),
+    }
+}
+
 pub fn gauge_value_text(row: &ApiGaugeRow) -> String {
     if row.state == ApiGaugeState::Auth {
         return "AUTH".into();
@@ -329,33 +465,37 @@ pub fn gauge_value_text(row: &ApiGaugeRow) -> String {
     if row.state == ApiGaugeState::Critical {
         text = format!("! {text}");
     }
+    let reset = format_reset_in(row.reset_in_secs);
+    if !reset.is_empty() {
+        text.push_str(" · ");
+        text.push_str(&reset);
+    }
     if row.stale {
         text.push_str(" · stale");
     }
     text
 }
 
-fn window_rank(label: &str) -> u8 {
-    match label {
-        "5h" | "Gem" => 0,
-        "Wk" | "Cl" => 1,
-        "Mo" => 2,
-        _ => 3,
-    }
-}
-
+/// provider 1개 -> 주간(primary) 게이지 1행. primary가 없으면 secondary로 폴백한다.
+/// (5시간/월간 창은 컴팩트 대시보드에 표시하지 않는다 — 주간 한도만.)
 fn expand_provider(row: &DisplayApiRow, compact_label: &str) -> Vec<ApiGaugeRow> {
     let stale = row.age_secs > 900;
     let status_ok = row.status == "ok";
-    let mut entries: Vec<(String, Option<f64>)> = Vec::new();
-    if row.primary_remaining_percent.is_some() && !row.primary_label.is_empty() {
-        entries.push((row.primary_label.clone(), row.primary_remaining_percent));
-    }
-    if row.secondary_remaining_percent.is_some() && !row.secondary_label.is_empty() {
-        entries.push((row.secondary_label.clone(), row.secondary_remaining_percent));
-    }
-    entries.sort_by_key(|(label, _)| window_rank(label));
-    if entries.is_empty() {
+    let primary = row.primary_remaining_percent.map(|value| {
+        (
+            row.primary_label.clone(),
+            Some(value),
+            row.primary_reset_in_secs,
+        )
+    });
+    let fallback = row.secondary_remaining_percent.map(|value| {
+        (
+            row.secondary_label.clone(),
+            Some(value),
+            row.secondary_reset_in_secs,
+        )
+    });
+    let Some((sublabel, remaining, reset_in_secs)) = primary.or(fallback) else {
         // 값 없음: 인증 실패/만료(status != ok)는 AUTH, 그 외는 N/A.
         let auth = !status_ok && row.amount_text.is_none();
         return vec![ApiGaugeRow {
@@ -369,19 +509,23 @@ fn expand_provider(row: &DisplayApiRow, compact_label: &str) -> Vec<ApiGaugeRow>
             },
             stale,
             amount_text: row.amount_text.clone(),
+            reset_in_secs: None,
         }];
-    }
-    entries
-        .into_iter()
-        .map(|(sublabel, remaining)| ApiGaugeRow {
-            label: compact_label.to_string(),
-            sublabel,
-            remaining,
-            state: gauge_state(remaining),
-            stale,
-            amount_text: None,
-        })
-        .collect()
+    };
+    let sublabel = if sublabel.is_empty() {
+        "Wk".to_string()
+    } else {
+        sublabel
+    };
+    vec![ApiGaugeRow {
+        label: compact_label.to_string(),
+        sublabel,
+        remaining,
+        state: gauge_state(remaining),
+        stale,
+        amount_text: None,
+        reset_in_secs,
+    }]
 }
 
 /// 고정 우선순위(스펙 §1)에서의 위치. 목록 밖 provider는 뒤로 밀린다.
@@ -559,15 +703,18 @@ pub fn render(snapshot: &TurzxDisplaySnapshot, page: &str, orientation: Orientat
     let mut canvas = Canvas::new(width, height);
     canvas.rect(0, 0, width as i32, height as i32, COLOR_BG);
 
-    let mut y_pos = 10;
+    let mut y_pos = 8;
     let show_gpu = page != "api";
     let show_api = page != "runtime";
 
     if show_gpu {
-        y_pos = render_gpu_section(&mut canvas, snapshot, y_pos, width as i32);
+        y_pos = render_metrics_card(&mut canvas, snapshot, y_pos, width as i32);
+        y_pos = render_process_card(&mut canvas, snapshot, y_pos, width as i32);
     }
     if show_api {
-        render_api_section(&mut canvas, snapshot, y_pos, width as i32, height as i32);
+        // 단일 대시보드는 사용자가 정한 4개 주간 항목만, API 전용 페이지는 최대 6행.
+        let limit = if page == "api" { API_GAUGE_LIMIT } else { 4 };
+        render_api_card(&mut canvas, snapshot, y_pos, width as i32, height as i32, limit);
     }
 
     // footer
@@ -585,15 +732,28 @@ pub fn render(snapshot: &TurzxDisplaySnapshot, page: &str, orientation: Orientat
     canvas.finish().to_vec()
 }
 
-fn render_gpu_section(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, mut y_pos: i32, width: i32) -> i32 {
+/// 플랫 카드(참조 CSS): surface + 1px border + radius.
+fn draw_card(canvas: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
+    canvas.round_rect(x, y, w, h, 10, COLOR_BORDER);
+    canvas.round_rect(x + 1, y + 1, w - 2, h - 2, 9, COLOR_SURFACE);
+}
+
+/// 상단 카드: GPU/VRAM/RAM 게이지(값은 accent/임계 색, 굵게).
+fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_pos: i32, width: i32) -> i32 {
     let gpu = &snapshot.gpu;
+    let x = 8;
+    let w = width - 16;
+    let inner_x = x + 12;
+    let inner_w = w - 24;
+    let card_h = 118;
+    draw_card(canvas, x, y_pos, w, card_h);
+
     let name = if gpu.name.is_empty() {
         "GPU 없음".to_string()
     } else {
         gpu.name.replace("NVIDIA GeForce ", "")
     };
-    canvas.text(&truncate(&name, 22), 12, y_pos, 20, COLOR_TEXT, true);
-    // 온도/전력은 이름 줄 우측에 붙인다(세로 공간 절약).
+    canvas.text(&truncate(&name, 20), inner_x, y_pos + 10, 19, COLOR_TEXT, true);
     let mut info = String::new();
     if let Some(temp) = gpu.temperature_c {
         info.push_str(&format!("{temp}°C"));
@@ -605,163 +765,216 @@ fn render_gpu_section(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, mut 
         info.push_str(&format!("{power:.0}W"));
     }
     if !info.is_empty() {
-        canvas.text_right(&info, width - 12, y_pos + 4, 14, COLOR_MUTED, false);
+        canvas.text_right(&info, x + w - 12, y_pos + 13, 13, COLOR_MUTED, false);
     }
-    y_pos += 30;
 
-    // GPU 사용률 게이지: 높은 사용률 자체는 위험이 아니므로 색은 항상 accent(스펙 §11).
+    let mut row_y = y_pos + 36;
     let utilization = gpu.utilization_percent.map(|value| value as f64);
     let util_text = utilization
         .map(|value| format!("{}%", value.round() as i64))
         .unwrap_or_else(|| "N/A".into());
-    draw_value_gauge(canvas, "GPU", utilization, COLOR_ACCENT, &util_text, y_pos, width);
-    y_pos += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
+    draw_value_gauge(canvas, inner_x, inner_w, "GPU", utilization, COLOR_ACCENT, &util_text, row_y);
+    row_y += API_GAUGE_ROW_HEIGHT;
 
-    // VRAM 게이지: 사용률 채움, 75%↑ 주의, 90%↑ 위험(스펙 §11).
     let percent = vram_percent(gpu);
     let vram_text = format!(
         "{} / {} GB",
         format_gib(gpu.vram_used_bytes),
         format_gib(gpu.vram_total_bytes)
     );
-    draw_value_gauge(canvas, "VRAM", percent, vram_gauge_color(percent), &vram_text, y_pos, width);
-    y_pos += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
+    draw_value_gauge(canvas, inner_x, inner_w, "VRAM", percent, vram_gauge_color(percent), &vram_text, row_y);
+    row_y += API_GAUGE_ROW_HEIGHT;
 
-    canvas.line(10, y_pos, width - 10, y_pos, COLOR_SEPARATOR);
-    y_pos += 8;
-    canvas.text("GPU PROCESSES", 12, y_pos, 13, COLOR_MUTED, true);
-    y_pos += 20;
+    let ram_percent = match (gpu.ram_used_bytes, gpu.ram_total_bytes) {
+        (Some(used), Some(total)) if total > 0 => Some(used as f64 / total as f64 * 100.0),
+        _ => None,
+    };
+    let ram_text = format!(
+        "{} / {} GB",
+        format_gib(gpu.ram_used_bytes),
+        format_gib(gpu.ram_total_bytes)
+    );
+    draw_value_gauge(canvas, inner_x, inner_w, "RAM", ram_percent, vram_gauge_color(ram_percent), &ram_text, row_y);
+
+    y_pos + card_h + 6
+}
+
+/// GPU PROCESSES 카드.
+fn render_process_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_pos: i32, width: i32) -> i32 {
+    let x = 8;
+    let w = width - 16;
+    let inner_x = x + 12;
 
     let (rows, overflow) = prioritize_workloads(snapshot.workloads.clone());
+    let row_lines: i32 = rows
+        .iter()
+        .map(|row| if row.model.is_some() { 34 } else { 19 })
+        .sum();
+    let card_h = 12 + 18 + row_lines + if overflow > 0 { 15 } else { 0 } + if rows.is_empty() { 18 } else { 0 } + 8;
+    draw_card(canvas, x, y_pos, w, card_h);
+
+    let mut row_y = y_pos + 10;
+    canvas.text("GPU PROCESSES", inner_x, row_y, 12, COLOR_MUTED, true);
+    row_y += 18;
+
     if rows.is_empty() {
-        canvas.text("(GPU 사용 중인 AI 워크로드 없음)", 12, y_pos, 13, COLOR_FAINT, false);
-        y_pos += 20;
+        canvas.text("(GPU 사용 중인 워크로드 없음)", inner_x, row_y, 12, COLOR_FAINT, false);
+        row_y += 18;
     }
     for workload in rows {
-        canvas.circle(16, y_pos + 8, 4, COLOR_ACCENT);
+        let label = truncate(&workload.service, 17);
+        canvas.text(&label, inner_x + 10, row_y, 14, COLOR_TEXT, true);
+        canvas.circle(inner_x + 3, row_y + 7, 3, COLOR_ACCENT);
         let gpu_percent = workload
             .gpu_percent
             .map(|percent| format!("{}%", percent.round() as i64))
             .unwrap_or_else(|| "N/A".into());
         let vram = format!("{} GB", format_gib(workload.vram_bytes));
-        canvas.text(&truncate(&workload.service, 18), 27, y_pos, 15, COLOR_TEXT, true);
-        canvas.text_right(&format!("{gpu_percent} · {vram}"), width - 12, y_pos, 13, COLOR_MUTED, false);
-        y_pos += 20;
+        canvas.text_right(
+            &format!("{gpu_percent} · {vram}"),
+            x + w - 12,
+            row_y,
+            12,
+            COLOR_MUTED,
+            false,
+        );
+        row_y += 19;
         if let Some(model) = workload.model.as_deref() {
-            canvas.text(&truncate(model, 26), 33, y_pos, 12, COLOR_MUTED, false);
-            y_pos += 17;
+            if !model.eq_ignore_ascii_case(&workload.service) {
+                canvas.text(&truncate(model, 24), inner_x + 10, row_y, 11, COLOR_MUTED, false);
+                row_y += 15;
+            }
         }
     }
     if overflow > 0 {
-        canvas.text(&format!("+{overflow} more"), 33, y_pos, 12, COLOR_FAINT, false);
-        y_pos += 17;
+        canvas.text(&format!("+{overflow} more"), inner_x + 10, row_y, 11, COLOR_FAINT, false);
     }
-    y_pos += 6;
-    y_pos
+    y_pos + card_h + 6
+}
+
+fn api_card_height(rows: usize, overflow: usize) -> i32 {
+    10 + 18
+        + rows as i32 * (API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP)
+        + if overflow > 0 { 14 } else { 0 }
+        + 6
+}
+
+/// API 주간 한도 카드(Codex 고정 + 주간 잔여/리셋).
+fn render_api_card(
+    canvas: &mut Canvas,
+    snapshot: &TurzxDisplaySnapshot,
+    y_pos: i32,
+    width: i32,
+    height: i32,
+    limit: usize,
+) -> i32 {
+    let x = 8;
+    let w = width - 16;
+    let inner_x = x + 12;
+    let inner_w = w - 24;
+
+    if snapshot.api_usage.is_empty() {
+        draw_card(canvas, x, y_pos, w, 46);
+        canvas.text("API USAGE", inner_x, y_pos + 10, 12, COLOR_MUTED, true);
+        canvas.text("(사용량 스냅샷 없음)", inner_x, y_pos + 26, 12, COLOR_FAINT, false);
+        return y_pos + 52;
+    }
+    let (mut rows, mut overflow) = build_api_gauges(&snapshot.api_usage, limit.max(1));
+    // 어떤 경우에도 카드(그리고 Codex)는 사라지지 않는다 — 공간이 부족하면 행을 줄인다.
+    let available = height - 26 - y_pos;
+    let mut card_h = api_card_height(rows.len(), overflow);
+    while rows.len() > 1 && card_h > available {
+        if rows.pop().is_some() {
+            overflow += 1;
+        }
+        card_h = api_card_height(rows.len(), overflow);
+    }
+    if card_h > available {
+        return y_pos; // 푸터 침범 방지(이 경우엔 페이지가 이미 가득 참)
+    }
+    draw_card(canvas, x, y_pos, w, card_h);
+
+    let mut row_y = y_pos + 9;
+    canvas.text("API USAGE", inner_x, row_y, 12, COLOR_MUTED, true);
+    canvas.text_right("Wk · 리셋", x + w - 12, row_y, 10, COLOR_FAINT, false);
+    row_y += 18;
+    for row in &rows {
+        draw_api_gauge(canvas, row, row_y, width, inner_x, inner_w);
+        row_y += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
+    }
+    if overflow > 0 {
+        canvas.text(&format!("+{overflow} more"), inner_x, row_y, 11, COLOR_FAINT, false);
+    }
+    y_pos + card_h + 6
 }
 
 /// 값 라벨형 오버레이 게이지(GPU/VRAM): 채움 = 값, 우측 값 텍스트는 칩 위에 올린다.
 fn draw_value_gauge(
     canvas: &mut Canvas,
+    x: i32,
+    w: i32,
     label: &str,
     percent: Option<f64>,
     fill_color: (u8, u8, u8),
     value: &str,
     y: i32,
-    width: i32,
 ) {
-    let x = 10;
-    let w = width - 20;
     let h = API_GAUGE_ROW_HEIGHT;
-    canvas.round_rect(x, y, w, h, 6, COLOR_BAR_BG);
+    canvas.round_rect(x, y, w, h, 8, COLOR_BAR_BG);
     let fill_w = gauge_fill_width(w, percent);
     if fill_w > 0 {
-        canvas.round_rect(x, y, fill_w.max(3), h, 6, fill_color);
+        canvas.round_rect(x, y, fill_w.max(3), h, 8, fill_color);
     }
     let label_w = canvas.text_width(label, 14, true);
-    let label_color = if fill_w >= 8 + label_w {
-        COLOR_ON_FILL
-    } else {
-        COLOR_TEXT
-    };
-    canvas.text(label, x + 8, y + 4, 14, label_color, true);
+    let label_chip_w = label_w + 14;
+    canvas.round_rect(x + 2, y + 2, label_chip_w, h - 4, 6, COLOR_CHIP_BORDER);
+    canvas.round_rect(x + 3, y + 3, label_chip_w - 2, h - 6, 5, COLOR_GAUGE_CHIP);
+    canvas.text(label, x + 9, y + 4, 14, COLOR_TEXT, true);
     let value_w = canvas.text_width(value, 14, true);
-    let chip_w = value_w + 12;
-    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 5, COLOR_GAUGE_CHIP);
-    canvas.text_right(value, x + w - 8, y + 4, 14, COLOR_TEXT, true);
-}
-
-fn render_api_section(
-    canvas: &mut Canvas,
-    snapshot: &TurzxDisplaySnapshot,
-    mut y_pos: i32,
-    width: i32,
-    height: i32,
-) {
-    if y_pos > height - 60 {
-        return;
-    }
-    canvas.line(10, y_pos, width - 10, y_pos, COLOR_SEPARATOR);
-    y_pos += 8;
-    canvas.text("API USAGE", 12, y_pos, 13, COLOR_MUTED, true);
-    canvas.text_right("left", width - 12, y_pos, 11, COLOR_FAINT, false);
-    y_pos += 20;
-
-    if snapshot.api_usage.is_empty() {
-        canvas.text("(사용량 스냅샷 없음)", 12, y_pos, 13, COLOR_FAINT, false);
-        return;
-    }
-    let (rows, overflow) = build_api_gauges(&snapshot.api_usage, API_GAUGE_LIMIT);
-    for row in &rows {
-        if y_pos + API_GAUGE_ROW_HEIGHT > height - 30 {
-            break;
-        }
-        draw_api_gauge(canvas, row, y_pos, width);
-        y_pos += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
-    }
-    if overflow > 0 {
-        canvas.text(&format!("+{overflow} more"), 14, y_pos, 12, COLOR_FAINT, false);
-    }
+    let chip_w = value_w + 14;
+    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 6, COLOR_CHIP_BORDER);
+    canvas.round_rect(x + w - chip_w - 1, y + 3, chip_w - 2, h - 6, 5, COLOR_GAUGE_CHIP);
+    canvas.text_right(value, x + w - 9, y + 4, 14, COLOR_TEXT, true);
 }
 
 /// 컴팩트 오버레이 게이지 1행: 배경=남은 비율 채움, 텍스트는 그 위에.
-fn draw_api_gauge(canvas: &mut Canvas, row: &ApiGaugeRow, y: i32, width: i32) {
-    let x = 10;
-    let w = width - 20;
+fn draw_api_gauge(canvas: &mut Canvas, row: &ApiGaugeRow, y: i32, width: i32, x: i32, w: i32) {
+    let _ = width;
     let h = API_GAUGE_ROW_HEIGHT;
 
-    canvas.round_rect(x, y, w, h, 6, COLOR_BAR_BG);
+    canvas.round_rect(x, y, w, h, 8, COLOR_BAR_BG);
     let fill_w = gauge_fill_width(w, row.remaining);
     if let Some(color) = row.state.fill_color() {
         if fill_w > 0 {
-            canvas.round_rect(x, y, fill_w.max(3), h, 6, color);
+            canvas.round_rect(x, y, fill_w.max(3), h, 8, color);
         }
     } else if row.stale {
-        canvas.round_rect(x, y, (w / 8).max(3), h, 6, COLOR_FAINT);
+        canvas.round_rect(x, y, (w / 8).max(3), h, 8, COLOR_FAINT);
     }
 
-    // 좌측 라벨: 채움이 라벨을 덮으면 어두운 글자, 아니면 밝은 글자(스펙 §5).
     let label = if row.sublabel.is_empty() {
         row.label.clone()
     } else {
         format!("{} {}", row.label, row.sublabel)
     };
+    // 라벨도 어두운 칩 위에 올려 채움과 무관하게 항상 읽히게 한다.
     let label_text = truncate(&label, 18);
     let label_w = canvas.text_width(&label_text, 14, true);
-    let label_color = if fill_w >= 8 + label_w {
-        COLOR_ON_FILL
-    } else if row.state == ApiGaugeState::Auth || row.state == ApiGaugeState::Unknown {
+    let label_chip_w = label_w + 14;
+    canvas.round_rect(x + 2, y + 2, label_chip_w, h - 4, 6, COLOR_CHIP_BORDER);
+    canvas.round_rect(x + 3, y + 3, label_chip_w - 2, h - 6, 5, COLOR_GAUGE_CHIP);
+    let label_color = if row.state == ApiGaugeState::Auth || row.state == ApiGaugeState::Unknown {
         COLOR_MUTED
     } else {
         COLOR_TEXT
     };
-    canvas.text(&label_text, x + 8, y + 4, 14, label_color, true);
+    canvas.text(&label_text, x + 9, y + 4, 14, label_color, true);
 
-    // 우측 값: 어두운 칩 위에 그려 채움 경계와 겹치지 않고 항상 같은 대비를 유지(스펙 §5).
     let value = gauge_value_text(row);
     let value_w = canvas.text_width(&value, 14, true);
-    let chip_w = value_w + 12;
-    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 5, COLOR_GAUGE_CHIP);
+    let chip_w = value_w + 14;
+    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 6, COLOR_CHIP_BORDER);
+    canvas.round_rect(x + w - chip_w - 1, y + 3, chip_w - 2, h - 6, 5, COLOR_GAUGE_CHIP);
     let value_color = match row.state {
         ApiGaugeState::Critical | ApiGaugeState::Limit => COLOR_DANGER,
         ApiGaugeState::Warning => COLOR_ORANGE,
@@ -770,7 +983,7 @@ fn draw_api_gauge(canvas: &mut Canvas, row: &ApiGaugeRow, y: i32, width: i32) {
         ApiGaugeState::Normal => COLOR_TEXT,
     };
     let value_color = if row.stale { COLOR_MUTED } else { value_color };
-    canvas.text_right(&value, x + w - 8, y + 4, 14, value_color, true);
+    canvas.text_right(&value, x + w - 9, y + 4, 14, value_color, true);
 }
 
 // ---------------------------------------------------------------- 샘플(프리뷰용)
@@ -785,6 +998,8 @@ pub fn sample_snapshot() -> TurzxDisplaySnapshot {
             vram_total_bytes: Some((31.8 * GIB) as u64),
             temperature_c: Some(51),
             power_watts: Some(82.0),
+            ram_used_bytes: Some((22.9 * GIB) as u64),
+            ram_total_bytes: Some((63.9 * GIB) as u64),
         },
         workloads: vec![
             DisplayWorkload {
@@ -839,80 +1054,62 @@ pub fn sample_snapshot() -> TurzxDisplaySnapshot {
             },
         ],
         api_usage: vec![
-            // Codex(고정): 5h 72% · Wk 94% — 두 창 모두 표시.
+            // Codex 주간 한도(고정) 93% + 리셋 6일.
             DisplayApiRow {
                 id: "codex".into(),
                 label: "Codex".into(),
-                primary_remaining_percent: Some(94.0),
+                primary_remaining_percent: Some(93.0),
                 primary_label: "Wk".into(),
-                secondary_remaining_percent: Some(72.0),
-                secondary_label: "5h".into(),
+                primary_reset_in_secs: Some(594_000),
                 amount_text: None,
                 status: "ok".into(),
                 age_secs: 60,
+                ..Default::default()
             },
-            // Antigravity: Gem 61%(정상) · Cl 35%(주의).
+            // Antigravity: 더 빠듯한 주간 창(Claude 38%, 리셋 3시간)과 Gemini(63%, 2일).
             DisplayApiRow {
                 id: "antigravity".into(),
                 label: "Antigravity".into(),
-                primary_remaining_percent: Some(61.0),
+                primary_remaining_percent: Some(63.0),
                 primary_label: "Gem".into(),
-                secondary_remaining_percent: Some(35.0),
+                primary_reset_in_secs: Some(241_920),
+                secondary_remaining_percent: Some(38.0),
                 secondary_label: "Cl".into(),
+                secondary_reset_in_secs: Some(10_800),
                 amount_text: None,
                 status: "ok".into(),
                 age_secs: 120,
+                ..Default::default()
             },
-            // Grok: 15%(경고) — Grok Build(99%, 오버플로)와 별도 서비스.
+            // Grok Build 주간 91% + 리셋 5일.
             DisplayApiRow {
-                id: "grok".into(),
-                label: "Grok".into(),
-                primary_remaining_percent: Some(15.0),
-                primary_label: "Mo".into(),
-                secondary_remaining_percent: None,
-                secondary_label: String::new(),
+                id: "grok-build".into(),
+                label: "Grok Build".into(),
+                primary_remaining_percent: Some(91.0),
+                primary_label: "Wk".into(),
+                primary_reset_in_secs: Some(506_000),
                 amount_text: None,
                 status: "ok".into(),
-                age_secs: 90,
+                age_secs: 45,
+                ..Default::default()
             },
-            // OpenCode Go: 7%(위험) — 두 번째 창 81%는 공간상 오버플로.
+            // OpenCode Go 주간 25% + 리셋 10시간.
             DisplayApiRow {
                 id: "opencode".into(),
                 label: "OpenCode".into(),
-                primary_remaining_percent: Some(7.0),
+                primary_remaining_percent: Some(25.0),
                 primary_label: "Wk".into(),
-                secondary_remaining_percent: Some(81.0),
+                primary_reset_in_secs: Some(36_000),
+                secondary_remaining_percent: Some(7.0),
                 secondary_label: "Mo".into(),
                 amount_text: None,
                 status: "ok".into(),
                 age_secs: 30,
-            },
-            DisplayApiRow {
-                id: "grok-build".into(),
-                label: "Grok Build".into(),
-                primary_remaining_percent: Some(99.0),
-                primary_label: "Wk".into(),
-                secondary_remaining_percent: None,
-                secondary_label: String::new(),
-                amount_text: None,
-                status: "ok".into(),
-                age_secs: 45,
-            },
-            DisplayApiRow {
-                id: "openrouter".into(),
-                label: "OpenRouter".into(),
-                primary_remaining_percent: None,
-                primary_label: String::new(),
-                secondary_remaining_percent: None,
-                secondary_label: String::new(),
-                amount_text: Some("$6.2 / $10".into()),
-                status: "ok".into(),
-                age_secs: 300,
+                ..Default::default()
             },
         ],
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1084,19 +1281,50 @@ mod tests {
     }
 
     #[test]
-    fn codex_is_pinned_first_and_both_windows_render() {
-        // 스펙 §1 고정 우선순위 문서화(Codex > Antigravity > Grok > OpenCode).
+    fn codex_is_pinned_with_weekly_quota_and_reset() {
+        // 스펙(사용자): 주간 한도만 + Codex 고정. 우선순위 문서도 함께 확인.
         assert_eq!(API_PIN_ORDER[0], "codex");
         assert_eq!(API_PIN_ORDER[1], "antigravity");
         assert!(API_PIN_ORDER.contains(&"grok"));
         assert!(API_PIN_ORDER.contains(&"opencode"));
         let (gauges, _) = build_api_gauges(&sample_snapshot().api_usage, API_GAUGE_LIMIT);
         assert_eq!(gauges[0].label, "Codex");
-        assert_eq!(gauges[0].sublabel, "5h");
-        assert_eq!(gauges[0].remaining, Some(72.0));
-        assert_eq!(gauges[1].label, "Codex");
-        assert_eq!(gauges[1].sublabel, "Wk");
-        assert_eq!(gauges[1].remaining, Some(94.0));
+        assert_eq!(gauges[0].sublabel, "Wk");
+        assert_eq!(gauges[0].remaining, Some(93.0));
+        assert_eq!(gauge_value_text(&gauges[0]), "93% · 6d");
+        // 주간 전용: 5시간/월간 행은 렌더하지 않는다.
+        assert!(gauges.iter().all(|row| row.sublabel != "5h" && row.sublabel != "Mo"));
+    }
+
+
+    #[test]
+    fn formats_reset_countdown_in_days_and_hours() {
+        assert_eq!(format_reset_in(None), "");
+        assert_eq!(format_reset_in(Some(-5)), "");
+        assert_eq!(format_reset_in(Some(3_600)), "1h");
+        assert_eq!(format_reset_in(Some(36_000)), "10h");
+        assert_eq!(format_reset_in(Some(86_400)), "1d");
+        assert_eq!(format_reset_in(Some(506_000)), "5d");
+        assert_eq!(format_reset_in(Some(594_000)), "6d");
+        let row = ApiGaugeRow {
+            label: "Codex".into(),
+            sublabel: "Wk".into(),
+            remaining: Some(93.0),
+            state: ApiGaugeState::Normal,
+            reset_in_secs: Some(594_000),
+            ..Default::default()
+        };
+        assert_eq!(gauge_value_text(&row), "93% · 6d");
+    }
+
+    #[test]
+    fn reset_helpers_parse_iso_and_epoch() {
+        let value = serde_json::json!({"primaryResetAt": "2026-10-04T11:49:37Z"});
+        let now = 1_790_000_000; // 2026-09-27 근처
+        let secs = reset_in_secs_from(&value, &["primaryResetAt"], now).unwrap();
+        assert!(secs > 900_000 && secs < 1_400_000, "약 11~16일(2026-09-21 기준): {secs}");
+        let epoch = serde_json::json!({"resetInSec": 1234});
+        assert_eq!(reset_in_secs_from(&epoch, &["resetInSec"], now), Some(1234));
     }
 
     #[test]
@@ -1209,25 +1437,39 @@ mod tests {
 
     #[test]
     fn overflow_rows_are_counted() {
-        let (gauges, overflow) = build_api_gauges(&sample_snapshot().api_usage, API_GAUGE_LIMIT);
+        let mut rows: Vec<DisplayApiRow> = (0..8)
+            .map(|index| api_row(&format!("cred{index}"), Some(50.0 - index as f64), "Wk"))
+            .collect();
+        rows.insert(0, api_row("codex", Some(93.0), "Wk"));
+        let (gauges, overflow) = build_api_gauges(&rows, API_GAUGE_LIMIT);
         assert_eq!(gauges.len(), API_GAUGE_LIMIT);
-        assert_eq!(overflow, 3, "Grok Build + OpenCode Mo + OpenRouter");
+        assert_eq!(gauges[0].label, "Codex");
+        assert_eq!(overflow, 3, "9개 provider - 6행");
     }
+
 
     #[test]
     fn threshold_colors_are_drawn_in_compact_ai_section() {
-        // 샘플: 61/72/94 정상(accent), 35 주의(warn), 15 경고(orange), 7 위험(danger)
-        let frame = render(&sample_snapshot(), "single", Orientation::Portrait);
+        // 94 정상(accent) · 35 주의(amber) · 15 경고(orange) · 7 위험(red) 를 직접 구성한다.
+        let mut snapshot = sample_snapshot();
+        snapshot.api_usage = vec![
+            api_row("codex", Some(94.0), "Wk"),
+            api_row("antigravity", Some(35.0), "Wk"),
+            api_row("grok-build", Some(15.0), "Wk"),
+            api_row("opencode", Some(7.0), "Wk"),
+        ];
+        let frame = render(&snapshot, "single", Orientation::Portrait);
         let has = |color: (u8, u8, u8)| {
             frame
                 .chunks_exact(3)
                 .any(|pixel| pixel[0] == color.0 && pixel[1] == color.1 && pixel[2] == color.2)
         };
-        assert!(has(COLOR_ACCENT), "정상 게이지(accent) 채움 필요");
-        assert!(has(COLOR_WARN), "주의 게이지(amber) 채움 필요");
-        assert!(has(COLOR_ORANGE), "경고 게이지(orange) 채움 필요");
-        assert!(has(COLOR_DANGER), "위험 게이지(red) 채움 필요");
+        assert!(has(COLOR_ACCENT), "정상 게이지(accent) 필요");
+        assert!(has(COLOR_WARN), "주의(amber) 필요");
+        assert!(has(COLOR_ORANGE), "경고(orange) 필요");
+        assert!(has(COLOR_DANGER), "위험(red) 필요");
     }
+
 
     #[test]
     fn gauge_rows_do_not_overlap_footer() {
@@ -1242,6 +1484,61 @@ mod tests {
                 assert_ne!(pixel, COLOR_DANGER, "y={y} 에서 위험색 게이지가 푸터와 겹침");
                 assert_ne!(pixel, COLOR_WARN, "y={y} 에서 주의색 게이지가 푸터와 겹침");
             }
+        }
+    }
+
+    #[test]
+    fn antigravity_weekly_from_quota_groups() {
+        let details = serde_json::json!({
+            "geminiRemainingPercent": 38.9,
+            "claudeRemainingPercent": 100,
+            "quotaGroups": [
+                {"name": "Gemini Models", "weeklyRemainingPercent": 62.8, "weeklyResetAt": "2026-09-30T15:53:09Z"},
+                {"name": "Claude and GPT models", "weeklyRemainingPercent": 38.2, "weeklyResetAt": "2026-09-27T01:22:09Z"}
+            ]
+        })
+        .to_string();
+        let row = normalize_monitor_row("antigravity", Some(&details)).unwrap();
+        // 데스크탑 앱 기본 그룹인 Gemini 주간(62.8%)이 primary.
+        assert_eq!(row.primary_label, "Gem");
+        assert_eq!(row.primary_remaining_percent, Some(62.8));
+        assert!(row.primary_reset_in_secs.is_some(), "주간 리셋 시각 파싱");
+        assert_eq!(row.secondary_label, "Cl");
+        assert_eq!(row.secondary_remaining_percent, Some(38.2));
+    }
+
+    #[test]
+    fn opencode_prefers_weekly_window_with_reset() {
+        let details = serde_json::json!({
+            "rolling": {"percent": 12, "resetsAt": "2026-09-27T14:40:04Z"},
+            "weekly": {"percent": 75, "resetsAt": "2026-09-28T00:00:00Z"},
+            "monthly": {"percent": 93, "resetsAt": "2026-10-10T13:15:30Z"}
+        })
+        .to_string();
+        let row = normalize_monitor_row("opencode", Some(&details)).unwrap();
+        assert_eq!(row.primary_label, "Wk");
+        assert_eq!(row.primary_remaining_percent, Some(25.0));
+        assert!(row.primary_reset_in_secs.is_some());
+        assert_eq!(row.secondary_label, "Mo");
+        assert_eq!(row.secondary_remaining_percent, Some(7.0));
+    }
+
+    #[test]
+    fn dto_includes_ram_and_reset_fields() {
+        let value = serde_json::to_value(sample_snapshot()).unwrap();
+        assert_eq!(value["gpu"]["ramTotalBytes"].as_u64().unwrap(), (63.9 * GIB) as u64);
+        assert!(value["gpu"]["ramUsedBytes"].as_u64().unwrap() > 0);
+        let codex = value["apiUsage"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == "codex")
+            .unwrap();
+        assert!(codex["primaryResetInSecs"].as_i64().unwrap() > 0);
+        // 시크릿/커맨드 라인 미노출 유지
+        let text = value.to_string().to_lowercase();
+        for forbidden in ["commandline", "api_key", "api-key", "sk-"] {
+            assert!(!text.contains(forbidden), "{forbidden} 노출");
         }
     }
 
