@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Modal } from "../components/Modal";
+import { TurzxSettingsSection } from "../components/TurzxSettingsSection";
 import { useToast } from "../components/ToastProvider";
 import { useAsyncData } from "../hooks/useAsyncData";
 import { listAllCredentialFields, listCredentialProjectUsage, listCredentialsWithContext } from "../lib/db/repo";
@@ -464,6 +465,8 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
           <p className="empty-note">임계치를 설정할 항목을 불러오는 중…</p>
         )}
       </section>
+
+      <TurzxSettingsSection />
 
       <section className="panel">
         <header className="panel-header">

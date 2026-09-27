@@ -7,6 +7,7 @@ mod local_services;
 mod migrations;
 mod model_import;
 mod monitors;
+mod turzx;
 mod usage;
 mod vault;
 
@@ -142,6 +143,7 @@ fn quit_app(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(150));
         local_services::shutdown(&handle);
+        turzx::shutdown(&handle);
         handle.exit(0);
         std::thread::sleep(std::time::Duration::from_millis(4_000));
         std::process::exit(0);
@@ -225,6 +227,7 @@ pub fn run() {
         .manage(LaunchState::new())
         .manage(local_services::LocalServicesState::new())
         .manage(gpu_monitor::GpuMonitorState::default())
+        .manage(turzx::TurzxState::default())
         .setup(|app| {
             let autostart = launched_from_autostart(std::env::args());
             app.state::<LaunchState>()
@@ -249,6 +252,13 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
                     let _ = open_mini_window(&handle);
                 });
+            }
+            // TURZX 디스플레이: 설정에서 "앱과 함께 시작"이 켜져 있으면 워커를 띄운다.
+            {
+                let settings = turzx::turzx_settings(app.handle().clone());
+                if settings.enabled && settings.launch_with_app {
+                    turzx::start_worker(app.handle());
+                }
             }
             if let Ok(secs) = std::env::var("API_DESK_QUIT_AFTER") {
                 if let Ok(secs) = secs.parse::<u64>() {
@@ -324,6 +334,15 @@ pub fn run() {
             local_services::local_service_login_startup_plan,
             gpu_monitor::gpu_snapshot,
             gpu_monitor::gpu_process_details,
+            turzx::turzx_settings,
+            turzx::turzx_save_settings,
+            turzx::turzx_status,
+            turzx::turzx_detect,
+            turzx::turzx_test,
+            turzx::turzx_connect,
+            turzx::turzx_disconnect,
+            turzx::turzx_preview,
+            turzx::turzx_export_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running API Desk");

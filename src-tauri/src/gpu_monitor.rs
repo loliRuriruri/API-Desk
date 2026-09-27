@@ -872,6 +872,24 @@ fn build_processes(
     (result, other_count)
 }
 
+/// 다른 백엔드 모듈(TURZX 등)이 동일 캐시를 재사용할 수 있게 노출한다.
+/// (별도 NVML/nvidia-smi 폴링을 만들지 않기 위함)
+pub(crate) fn cached_snapshot(app: &AppHandle, ttl_ms: u64) -> GpuSnapshot {
+    let state = app.state::<GpuMonitorState>();
+    {
+        let cache = state.cache.lock().unwrap();
+        if let Some((snapshot, at)) = cache.as_ref() {
+            if at.elapsed().as_millis() as u64 <= ttl_ms {
+                return snapshot.clone();
+            }
+        }
+    }
+    let snapshot = refresh_snapshot(app);
+    let mut cache = state.cache.lock().unwrap();
+    *cache = Some((snapshot.clone(), Instant::now()));
+    snapshot
+}
+
 fn refresh_snapshot(app: &AppHandle) -> GpuSnapshot {
     let services = app.state::<LocalServicesState>();
     let monitor = app.state::<GpuMonitorState>();

@@ -916,7 +916,7 @@ fn reset_in_seconds(value: &Value) -> Option<i64> {
     Some((target - now).max(0))
 }
 
-fn parse_rfc3339_secs(text: &str) -> Option<i64> {
+pub(crate) fn parse_rfc3339_secs(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
     if bytes.len() < 19 {
         return None;

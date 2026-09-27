@@ -32,3 +32,5 @@ API Desk_*.msi
 
 # Local tool traces
 .opencode/jev-trace.jsonl
+# TURZX 미리보기 PNG(생성물, 커밋하지 않음)
+docs/turzx-ai-dashboard-preview*.png
