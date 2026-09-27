@@ -18,10 +18,21 @@ pub const COLOR_DANGER: (u8, u8, u8) = (235, 96, 118);
 pub const COLOR_ACCENT: (u8, u8, u8) = (0, 229, 255);
 pub const COLOR_BAR_BG: (u8, u8, u8) = (40, 52, 66);
 pub const COLOR_SEPARATOR: (u8, u8, u8) = (44, 58, 74);
+/// 10~20% 남음(경고) 단계 색.
+pub const COLOR_ORANGE: (u8, u8, u8) = (250, 150, 74);
+/// 값 텍스트 뒤에 까는 칩(채움 경계와 무관하게 대비 보장).
+const COLOR_GAUGE_CHIP: (u8, u8, u8) = (13, 18, 24);
+/// 밝은 채움 위에 얹는 어두운 글자색.
+const COLOR_ON_FILL: (u8, u8, u8) = (9, 13, 17);
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 pub const WORKLOAD_LIMIT: usize = 3;
-pub const API_LIMIT: usize = 4;
+/// 컴팩트 API 게이지: 기본 대시보드에 표시하는 최대 행 수(스펙 §8, 4~6).
+pub const API_GAUGE_LIMIT: usize = 6;
+pub const API_GAUGE_ROW_HEIGHT: i32 = 23;
+pub const API_GAUGE_ROW_GAP: i32 = 3;
+/// 스펙 §1 고정 우선순위: Codex > Antigravity > Grok(계열) > OpenCode Go.
+pub const API_PIN_ORDER: [&str; 5] = ["codex", "antigravity", "grok", "grok-build", "opencode"];
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -93,17 +104,10 @@ pub fn vram_percent(gpu: &DisplayGpu) -> Option<f64> {
 }
 
 /// 남은 비율 색상: <10% 위험, <20% 경고.
-pub fn remaining_color(percent: Option<f64>) -> (u8, u8, u8) {
-    match percent {
-        None => COLOR_FAINT,
-        Some(value) if value < 10.0 => COLOR_DANGER,
-        Some(value) if value < 20.0 => COLOR_WARN,
-        Some(_) => COLOR_TEXT,
-    }
-}
 
-/// VRAM 사용률 색상: >90% 위험, >75% 경고.
-pub fn vram_color(percent: Option<f64>) -> (u8, u8, u8) {
+/// VRAM(사용률) 게이지 색(스펙 §11): >90% 위험, >75% 주의.
+/// GPU 사용률은 높아도 그 자체로 위험이 아니므로 별도 경고색을 쓰지 않는다.
+pub fn vram_gauge_color(percent: Option<f64>) -> (u8, u8, u8) {
     match percent {
         None => COLOR_FAINT,
         Some(value) if value > 90.0 => COLOR_DANGER,
@@ -112,12 +116,8 @@ pub fn vram_color(percent: Option<f64>) -> (u8, u8, u8) {
     }
 }
 
-pub fn percent_text(percent: Option<f64>) -> String {
-    match percent {
-        Some(value) => format!("{}%", value.round() as i64),
-        None => "N/A".to_string(),
-    }
-}
+/// VRAM 사용률 색상: >90% 위험, >75% 경고.
+
 
 /// 금액 문자열("$6.2 / $10")을 만든다. 통화/숫자가 없으면 None.
 pub fn amount_text(used: Option<f64>, limit: Option<f64>, currency: Option<&str>) -> Option<String> {
@@ -246,6 +246,8 @@ pub fn normalize_usage_row(
 
 /// 표시 우선순위: 남은 비율이 낮은 것 → 최신(age 작은 것) 순. 최대 API_LIMIT개.
 pub fn prioritize_api_rows(mut rows: Vec<DisplayApiRow>) -> Vec<DisplayApiRow> {
+    // 정렬만 수행한다. 행 선택/고정/리밋은 build_api_gauges가 담당하며
+    // 여기서 잘라내면 Codex가 사라질 수 있다(스펙 §1).
     rows.sort_by(|a, b| {
         let a_remaining = a.primary_remaining_percent.unwrap_or(f64::INFINITY);
         let b_remaining = b.primary_remaining_percent.unwrap_or(f64::INFINITY);
@@ -254,8 +256,235 @@ pub fn prioritize_api_rows(mut rows: Vec<DisplayApiRow>) -> Vec<DisplayApiRow> {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.age_secs.cmp(&b.age_secs))
     });
-    rows.truncate(API_LIMIT);
     rows
+}
+
+// ---------------------------------------------------------------- 컴팩트 API 게이지
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ApiGaugeState {
+    Normal,
+    Caution,
+    Warning,
+    Critical,
+    Limit,
+    Auth,
+    #[default]
+    Unknown,
+}
+
+impl ApiGaugeState {
+    /// 채움 색. None이면 채우지 않는다(AUTH/N/A — 가짜 0% 게이지 금지).
+    pub fn fill_color(self) -> Option<(u8, u8, u8)> {
+        match self {
+            ApiGaugeState::Normal => Some(COLOR_ACCENT),
+            ApiGaugeState::Caution => Some(COLOR_WARN),
+            ApiGaugeState::Warning => Some(COLOR_ORANGE),
+            ApiGaugeState::Critical | ApiGaugeState::Limit => Some(COLOR_DANGER),
+            ApiGaugeState::Auth | ApiGaugeState::Unknown => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ApiGaugeRow {
+    pub label: String,
+    pub sublabel: String,
+    pub remaining: Option<f64>,
+    pub state: ApiGaugeState,
+    pub stale: bool,
+    pub amount_text: Option<String>,
+}
+
+/// 남은 비율 -> 게이지 상태(스펙 §4). 0%는 실제 소진일 때만 LIMIT.
+pub fn gauge_state(remaining: Option<f64>) -> ApiGaugeState {
+    match remaining {
+        None => ApiGaugeState::Unknown,
+        Some(value) if value <= 0.0 => ApiGaugeState::Limit,
+        Some(value) if value <= 10.0 => ApiGaugeState::Critical,
+        Some(value) if value <= 20.0 => ApiGaugeState::Warning,
+        Some(value) if value <= 50.0 => ApiGaugeState::Caution,
+        Some(_) => ApiGaugeState::Normal,
+    }
+}
+
+/// 채움 폭 = 남은 비율(반전 금지, 스펙 §10).
+pub fn gauge_fill_width(row_width: i32, remaining: Option<f64>) -> i32 {
+    let Some(value) = remaining else { return 0 };
+    let clamped = value.clamp(0.0, 100.0);
+    ((row_width as f64) * clamped / 100.0).round() as i32
+}
+
+/// 우측 값 텍스트(스펙 §6/§7): 0%는 LIMIT, 인증 실패는 AUTH, 오래되면 stale.
+pub fn gauge_value_text(row: &ApiGaugeRow) -> String {
+    if row.state == ApiGaugeState::Auth {
+        return "AUTH".into();
+    }
+    let mut text = match (row.remaining, row.amount_text.as_deref()) {
+        (Some(value), _) if value <= 0.0 => "0% LIMIT".into(),
+        (Some(value), _) => format!("{}%", value.round() as i64),
+        (None, Some(amount)) => amount.to_string(),
+        (None, None) => "N/A".into(),
+    };
+    if row.state == ApiGaugeState::Critical {
+        text = format!("! {text}");
+    }
+    if row.stale {
+        text.push_str(" · stale");
+    }
+    text
+}
+
+fn window_rank(label: &str) -> u8 {
+    match label {
+        "5h" | "Gem" => 0,
+        "Wk" | "Cl" => 1,
+        "Mo" => 2,
+        _ => 3,
+    }
+}
+
+fn expand_provider(row: &DisplayApiRow, compact_label: &str) -> Vec<ApiGaugeRow> {
+    let stale = row.age_secs > 900;
+    let status_ok = row.status == "ok";
+    let mut entries: Vec<(String, Option<f64>)> = Vec::new();
+    if row.primary_remaining_percent.is_some() && !row.primary_label.is_empty() {
+        entries.push((row.primary_label.clone(), row.primary_remaining_percent));
+    }
+    if row.secondary_remaining_percent.is_some() && !row.secondary_label.is_empty() {
+        entries.push((row.secondary_label.clone(), row.secondary_remaining_percent));
+    }
+    entries.sort_by_key(|(label, _)| window_rank(label));
+    if entries.is_empty() {
+        // 값 없음: 인증 실패/만료(status != ok)는 AUTH, 그 외는 N/A.
+        let auth = !status_ok && row.amount_text.is_none();
+        return vec![ApiGaugeRow {
+            label: compact_label.to_string(),
+            sublabel: String::new(),
+            remaining: None,
+            state: if auth {
+                ApiGaugeState::Auth
+            } else {
+                ApiGaugeState::Unknown
+            },
+            stale,
+            amount_text: row.amount_text.clone(),
+        }];
+    }
+    entries
+        .into_iter()
+        .map(|(sublabel, remaining)| ApiGaugeRow {
+            label: compact_label.to_string(),
+            sublabel,
+            remaining,
+            state: gauge_state(remaining),
+            stale,
+            amount_text: None,
+        })
+        .collect()
+}
+
+/// 고정 우선순위(스펙 §1)에서의 위치. 목록 밖 provider는 뒤로 밀린다.
+fn pin_rank(id: &str) -> usize {
+    API_PIN_ORDER
+        .iter()
+        .position(|pinned| *pinned == id)
+        .unwrap_or(API_PIN_ORDER.len())
+}
+
+fn compact_label_for(id: &str, fallback: &str) -> String {
+    match id {
+        "openrouter" => "OpenRouter".into(),
+        "opencode" => "OpenCode".into(),
+        _ => {
+            let source = if fallback.is_empty() { id } else { fallback };
+            truncate(source, 12)
+        }
+    }
+}
+
+/// 컴팩트 API 게이지 목록(스펙 §1/§3/§8).
+/// Codex는 스냅샷이 있으면 반드시 포함(없으면 AUTH 행), 우선순위대로 채우고
+/// 나머지는 남은 비율이 낮은 순으로 채운다. 반환: (표시 행, 오버플로 행 수)
+pub fn build_api_gauges(rows: &[DisplayApiRow], limit: usize) -> (Vec<ApiGaugeRow>, usize) {
+    let mut out: Vec<ApiGaugeRow> = Vec::new();
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1) Codex 고정 — 스냅샷이 없어도 AUTH 행을 만든다(절대 생략 금지).
+    match rows.iter().find(|row| row.id == "codex") {
+        Some(row) => out.extend(expand_provider(row, "Codex")),
+        None => out.push(ApiGaugeRow {
+            label: "Codex".into(),
+            remaining: None,
+            state: ApiGaugeState::Auth,
+            ..Default::default()
+        }),
+    }
+    used.insert("codex".into());
+
+    // 2) Antigravity(Gem/Cl)
+    if let Some(row) = rows.iter().find(|row| row.id == "antigravity") {
+        out.extend(expand_provider(row, "AntiG"));
+        used.insert("antigravity".into());
+    }
+
+    // 3) Grok 계열은 한 슬롯: 유효한 스냅샷 우선, 동률이면 남은 값이 낮은 쪽.
+    //    두 서비스를 한 행으로 합치지 않고 라벨로 구분한다(스펙 §9).
+    {
+        let mut candidates: Vec<&DisplayApiRow> = rows
+            .iter()
+            .filter(|row| (row.id == "grok" || row.id == "grok-build") && !used.contains(row.id.as_str()))
+            .collect();
+        candidates.sort_by(|a, b| {
+            let a_valid = a.primary_remaining_percent.is_some();
+            let b_valid = b.primary_remaining_percent.is_some();
+            b_valid.cmp(&a_valid).then_with(|| {
+                let a_value = a.primary_remaining_percent.unwrap_or(f64::INFINITY);
+                let b_value = b.primary_remaining_percent.unwrap_or(f64::INFINITY);
+                a_value
+                    .partial_cmp(&b_value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+        if let Some(row) = candidates.first() {
+            let label = if row.id == "grok-build" {
+                "Grok Build"
+            } else {
+                "Grok Bot"
+            };
+            out.extend(expand_provider(row, label));
+            used.insert(row.id.clone());
+        }
+    }
+
+    // 4) OpenCode Go(최대 두 창)
+    if let Some(row) = rows.iter().find(|row| row.id == "opencode") {
+        out.extend(expand_provider(row, "OpenCode"));
+        used.insert("opencode".into());
+    }
+
+    // 5) 나머지(OpenRouter 등): 남은 비율 낮은 순 -> 최신, 각 1행.
+    let mut rest: Vec<&DisplayApiRow> = rows
+        .iter()
+        .filter(|row| !used.contains(row.id.as_str()))
+        .collect();
+    rest.sort_by(|a, b| {
+        let a_value = a.primary_remaining_percent.unwrap_or(f64::INFINITY);
+        let b_value = b.primary_remaining_percent.unwrap_or(f64::INFINITY);
+        a_value
+            .partial_cmp(&b_value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.age_secs.cmp(&b.age_secs))
+            .then_with(|| pin_rank(&a.id).cmp(&pin_rank(&b.id)))
+    });
+    for row in rest {
+        let label = compact_label_for(&row.id, &row.label);
+        out.extend(expand_provider(row, &label));
+    }
+
+    let overflow = out.len().saturating_sub(limit);
+    out.truncate(limit);
+    (out, overflow)
 }
 
 /// 워크로드 정렬: 관리형 서비스 → VRAM 큰 순 → unknown. 최대 WORKLOAD_LIMIT.
@@ -364,40 +593,39 @@ fn render_gpu_section(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, mut 
         gpu.name.replace("NVIDIA GeForce ", "")
     };
     canvas.text(&truncate(&name, 22), 12, y_pos, 20, COLOR_TEXT, true);
-    y_pos += 26;
-
-    // GPU util · temp · power 한 줄
-    let util_text = format!(
-        "GPU {}",
-        gpu.utilization_percent
-            .map(|value| format!("{value}%"))
-            .unwrap_or_else(|| "N/A".into())
-    );
-    canvas.text(&util_text, 12, y_pos, 18, COLOR_ACCENT, true);
-    let mut right = width - 12;
-    if let Some(power) = gpu.power_watts {
-        let text = format!("{power:.0}W");
-        canvas.text_right(&text, right, y_pos, 15, COLOR_MUTED, false);
-        right -= canvas.text_width(&text, 15, false) + 12;
-    }
+    // 온도/전력은 이름 줄 우측에 붙인다(세로 공간 절약).
+    let mut info = String::new();
     if let Some(temp) = gpu.temperature_c {
-        let text = format!("{temp}°C");
-        canvas.text_right(&text, right, y_pos, 15, COLOR_MUTED, false);
+        info.push_str(&format!("{temp}°C"));
     }
-    y_pos += 26;
+    if let Some(power) = gpu.power_watts {
+        if !info.is_empty() {
+            info.push_str(" · ");
+        }
+        info.push_str(&format!("{power:.0}W"));
+    }
+    if !info.is_empty() {
+        canvas.text_right(&info, width - 12, y_pos + 4, 14, COLOR_MUTED, false);
+    }
+    y_pos += 30;
 
-    // VRAM
+    // GPU 사용률 게이지: 높은 사용률 자체는 위험이 아니므로 색은 항상 accent(스펙 §11).
+    let utilization = gpu.utilization_percent.map(|value| value as f64);
+    let util_text = utilization
+        .map(|value| format!("{}%", value.round() as i64))
+        .unwrap_or_else(|| "N/A".into());
+    draw_value_gauge(canvas, "GPU", utilization, COLOR_ACCENT, &util_text, y_pos, width);
+    y_pos += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
+
+    // VRAM 게이지: 사용률 채움, 75%↑ 주의, 90%↑ 위험(스펙 §11).
     let percent = vram_percent(gpu);
     let vram_text = format!(
-        "VRAM {} / {} GB",
+        "{} / {} GB",
         format_gib(gpu.vram_used_bytes),
         format_gib(gpu.vram_total_bytes)
     );
-    canvas.text(&vram_text, 12, y_pos, 15, COLOR_TEXT, false);
-    canvas.text_right(&percent_text(percent), width - 12, y_pos, 15, vram_color(percent), true);
-    y_pos += 22;
-    canvas.bar(12, y_pos, width - 24, 12, percent.unwrap_or(0.0), vram_color(percent), COLOR_BAR_BG);
-    y_pos += 24;
+    draw_value_gauge(canvas, "VRAM", percent, vram_gauge_color(percent), &vram_text, y_pos, width);
+    y_pos += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
 
     canvas.line(10, y_pos, width - 10, y_pos, COLOR_SEPARATOR);
     y_pos += 8;
@@ -411,13 +639,13 @@ fn render_gpu_section(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, mut 
     }
     for workload in rows {
         canvas.circle(16, y_pos + 8, 4, COLOR_ACCENT);
-        let gpu = workload
+        let gpu_percent = workload
             .gpu_percent
             .map(|percent| format!("{}%", percent.round() as i64))
             .unwrap_or_else(|| "N/A".into());
         let vram = format!("{} GB", format_gib(workload.vram_bytes));
         canvas.text(&truncate(&workload.service, 18), 27, y_pos, 15, COLOR_TEXT, true);
-        canvas.text_right(&format!("{gpu} · {vram}"), width - 12, y_pos, 14, COLOR_MUTED, false);
+        canvas.text_right(&format!("{gpu_percent} · {vram}"), width - 12, y_pos, 13, COLOR_MUTED, false);
         y_pos += 20;
         if let Some(model) = workload.model.as_deref() {
             canvas.text(&truncate(model, 26), 33, y_pos, 12, COLOR_MUTED, false);
@@ -425,13 +653,42 @@ fn render_gpu_section(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, mut 
         }
     }
     if overflow > 0 {
-        let overflow_vram: u64 = 0;
-        let _ = overflow_vram;
         canvas.text(&format!("+{overflow} more"), 33, y_pos, 12, COLOR_FAINT, false);
         y_pos += 17;
     }
     y_pos += 6;
     y_pos
+}
+
+/// 값 라벨형 오버레이 게이지(GPU/VRAM): 채움 = 값, 우측 값 텍스트는 칩 위에 올린다.
+fn draw_value_gauge(
+    canvas: &mut Canvas,
+    label: &str,
+    percent: Option<f64>,
+    fill_color: (u8, u8, u8),
+    value: &str,
+    y: i32,
+    width: i32,
+) {
+    let x = 10;
+    let w = width - 20;
+    let h = API_GAUGE_ROW_HEIGHT;
+    canvas.round_rect(x, y, w, h, 6, COLOR_BAR_BG);
+    let fill_w = gauge_fill_width(w, percent);
+    if fill_w > 0 {
+        canvas.round_rect(x, y, fill_w.max(3), h, 6, fill_color);
+    }
+    let label_w = canvas.text_width(label, 14, true);
+    let label_color = if fill_w >= 8 + label_w {
+        COLOR_ON_FILL
+    } else {
+        COLOR_TEXT
+    };
+    canvas.text(label, x + 8, y + 4, 14, label_color, true);
+    let value_w = canvas.text_width(value, 14, true);
+    let chip_w = value_w + 12;
+    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 5, COLOR_GAUGE_CHIP);
+    canvas.text_right(value, x + w - 8, y + 4, 14, COLOR_TEXT, true);
 }
 
 fn render_api_section(
@@ -454,35 +711,66 @@ fn render_api_section(
         canvas.text("(사용량 스냅샷 없음)", 12, y_pos, 13, COLOR_FAINT, false);
         return;
     }
-    for row in &snapshot.api_usage {
-        if y_pos > height - 40 {
+    let (rows, overflow) = build_api_gauges(&snapshot.api_usage, API_GAUGE_LIMIT);
+    for row in &rows {
+        if y_pos + API_GAUGE_ROW_HEIGHT > height - 30 {
             break;
         }
-        canvas.text(&truncate(&row.label, 16), 12, y_pos, 14, COLOR_TEXT, false);
-        let stale = if row.age_secs > 900 {
-            format!(" ·{}m", row.age_secs / 60)
-        } else {
-            String::new()
-        };
-        let right = width - 12;
-        let secondary = row
-            .secondary_remaining_percent
-            .map(|value| format!("{} {}", row.secondary_label, percent_text(Some(value))))
-            .unwrap_or_default();
-        let primary = match (row.primary_remaining_percent, row.amount_text.as_deref()) {
-            (Some(value), _) => format!("{} {}", row.primary_label, percent_text(Some(value))),
-            (None, Some(amount)) => amount.to_string(),
-            _ => "N/A".to_string(),
-        };
-        let text = format!(
-            "{}{}{}",
-            primary,
-            if secondary.is_empty() { String::new() } else { format!("  {secondary}") },
-            stale
-        );
-        canvas.text_right(&text, right, y_pos, 13, remaining_color(row.primary_remaining_percent), false);
-        y_pos += 18;
+        draw_api_gauge(canvas, row, y_pos, width);
+        y_pos += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
     }
+    if overflow > 0 {
+        canvas.text(&format!("+{overflow} more"), 14, y_pos, 12, COLOR_FAINT, false);
+    }
+}
+
+/// 컴팩트 오버레이 게이지 1행: 배경=남은 비율 채움, 텍스트는 그 위에.
+fn draw_api_gauge(canvas: &mut Canvas, row: &ApiGaugeRow, y: i32, width: i32) {
+    let x = 10;
+    let w = width - 20;
+    let h = API_GAUGE_ROW_HEIGHT;
+
+    canvas.round_rect(x, y, w, h, 6, COLOR_BAR_BG);
+    let fill_w = gauge_fill_width(w, row.remaining);
+    if let Some(color) = row.state.fill_color() {
+        if fill_w > 0 {
+            canvas.round_rect(x, y, fill_w.max(3), h, 6, color);
+        }
+    } else if row.stale {
+        canvas.round_rect(x, y, (w / 8).max(3), h, 6, COLOR_FAINT);
+    }
+
+    // 좌측 라벨: 채움이 라벨을 덮으면 어두운 글자, 아니면 밝은 글자(스펙 §5).
+    let label = if row.sublabel.is_empty() {
+        row.label.clone()
+    } else {
+        format!("{} {}", row.label, row.sublabel)
+    };
+    let label_text = truncate(&label, 18);
+    let label_w = canvas.text_width(&label_text, 14, true);
+    let label_color = if fill_w >= 8 + label_w {
+        COLOR_ON_FILL
+    } else if row.state == ApiGaugeState::Auth || row.state == ApiGaugeState::Unknown {
+        COLOR_MUTED
+    } else {
+        COLOR_TEXT
+    };
+    canvas.text(&label_text, x + 8, y + 4, 14, label_color, true);
+
+    // 우측 값: 어두운 칩 위에 그려 채움 경계와 겹치지 않고 항상 같은 대비를 유지(스펙 §5).
+    let value = gauge_value_text(row);
+    let value_w = canvas.text_width(&value, 14, true);
+    let chip_w = value_w + 12;
+    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 5, COLOR_GAUGE_CHIP);
+    let value_color = match row.state {
+        ApiGaugeState::Critical | ApiGaugeState::Limit => COLOR_DANGER,
+        ApiGaugeState::Warning => COLOR_ORANGE,
+        ApiGaugeState::Caution => COLOR_WARN,
+        ApiGaugeState::Auth | ApiGaugeState::Unknown => COLOR_MUTED,
+        ApiGaugeState::Normal => COLOR_TEXT,
+    };
+    let value_color = if row.stale { COLOR_MUTED } else { value_color };
+    canvas.text_right(&value, x + w - 8, y + 4, 14, value_color, true);
 }
 
 // ---------------------------------------------------------------- 샘플(프리뷰용)
@@ -551,49 +839,75 @@ pub fn sample_snapshot() -> TurzxDisplaySnapshot {
             },
         ],
         api_usage: vec![
+            // Codex(고정): 5h 72% · Wk 94% — 두 창 모두 표시.
             DisplayApiRow {
                 id: "codex".into(),
                 label: "Codex".into(),
-                primary_remaining_percent: Some(42.0),
+                primary_remaining_percent: Some(94.0),
                 primary_label: "Wk".into(),
-                secondary_remaining_percent: Some(68.0),
+                secondary_remaining_percent: Some(72.0),
                 secondary_label: "5h".into(),
                 amount_text: None,
                 status: "ok".into(),
-                age_secs: 90,
+                age_secs: 60,
             },
+            // Antigravity: Gem 61%(정상) · Cl 35%(주의).
             DisplayApiRow {
                 id: "antigravity".into(),
                 label: "Antigravity".into(),
-                primary_remaining_percent: Some(73.0),
+                primary_remaining_percent: Some(61.0),
                 primary_label: "Gem".into(),
-                secondary_remaining_percent: Some(54.0),
+                secondary_remaining_percent: Some(35.0),
                 secondary_label: "Cl".into(),
                 amount_text: None,
                 status: "ok".into(),
                 age_secs: 120,
             },
+            // Grok: 15%(경고) — Grok Build(99%, 오버플로)와 별도 서비스.
             DisplayApiRow {
                 id: "grok".into(),
                 label: "Grok".into(),
-                primary_remaining_percent: None,
+                primary_remaining_percent: Some(15.0),
                 primary_label: "Mo".into(),
-                secondary_remaining_percent: None,
-                secondary_label: String::new(),
-                amount_text: Some("$6.2 / $10".into()),
-                status: "ok".into(),
-                age_secs: 60,
-            },
-            DisplayApiRow {
-                id: "opencode".into(),
-                label: "OpenCode".into(),
-                primary_remaining_percent: Some(37.0),
-                primary_label: "Ro".into(),
                 secondary_remaining_percent: None,
                 secondary_label: String::new(),
                 amount_text: None,
                 status: "ok".into(),
+                age_secs: 90,
+            },
+            // OpenCode Go: 7%(위험) — 두 번째 창 81%는 공간상 오버플로.
+            DisplayApiRow {
+                id: "opencode".into(),
+                label: "OpenCode".into(),
+                primary_remaining_percent: Some(7.0),
+                primary_label: "Wk".into(),
+                secondary_remaining_percent: Some(81.0),
+                secondary_label: "Mo".into(),
+                amount_text: None,
+                status: "ok".into(),
                 age_secs: 30,
+            },
+            DisplayApiRow {
+                id: "grok-build".into(),
+                label: "Grok Build".into(),
+                primary_remaining_percent: Some(99.0),
+                primary_label: "Wk".into(),
+                secondary_remaining_percent: None,
+                secondary_label: String::new(),
+                amount_text: None,
+                status: "ok".into(),
+                age_secs: 45,
+            },
+            DisplayApiRow {
+                id: "openrouter".into(),
+                label: "OpenRouter".into(),
+                primary_remaining_percent: None,
+                primary_label: String::new(),
+                secondary_remaining_percent: None,
+                secondary_label: String::new(),
+                amount_text: Some("$6.2 / $10".into()),
+                status: "ok".into(),
+                age_secs: 300,
             },
         ],
     }
@@ -641,7 +955,6 @@ mod tests {
         assert_eq!(format_gib(Some(1024 * 1024 * 1024)), "1.0");
         let gpu = DisplayGpu::default();
         assert_eq!(vram_percent(&gpu), None);
-        assert_eq!(percent_text(None), "N/A");
     }
 
     #[test]
@@ -694,20 +1007,19 @@ mod tests {
     }
 
     #[test]
-    fn prioritizes_low_remaining_and_limits_rows() {
-        let rows = vec![
+    fn sorts_low_remaining_first_without_dropping_codex() {
+        let mut rows = vec![
             DisplayApiRow { id: "a".into(), label: "A".into(), primary_remaining_percent: Some(80.0), age_secs: 5, ..Default::default() },
             DisplayApiRow { id: "b".into(), label: "B".into(), primary_remaining_percent: Some(12.0), age_secs: 900, ..Default::default() },
-            DisplayApiRow { id: "c".into(), label: "C".into(), primary_remaining_percent: None, age_secs: 1, ..Default::default() },
+            DisplayApiRow { id: "codex".into(), label: "Codex".into(), primary_remaining_percent: Some(94.0), primary_label: "Wk".into(), secondary_remaining_percent: Some(72.0), secondary_label: "5h".into(), age_secs: 1, ..Default::default() },
             DisplayApiRow { id: "d".into(), label: "D".into(), primary_remaining_percent: Some(30.0), age_secs: 60, ..Default::default() },
-            DisplayApiRow { id: "e".into(), label: "E".into(), primary_remaining_percent: Some(55.0), age_secs: 2, ..Default::default() },
         ];
-        let ordered = prioritize_api_rows(rows);
-        assert_eq!(ordered.len(), API_LIMIT);
+        let ordered = prioritize_api_rows(rows.clone());
+        // 정렬만 수행하고 잘라내지 않는다(스냅샷은 전체를 유지).
+        assert_eq!(ordered.len(), rows.len());
         assert_eq!(ordered[0].id, "b");
-        assert_eq!(ordered[1].id, "d");
-        assert_eq!(ordered[2].id, "e");
-        assert_eq!(ordered[3].id, "a");
+        assert!(ordered.iter().any(|row| row.id == "codex"));
+        rows.clear();
     }
 
     #[test]
@@ -729,14 +1041,208 @@ mod tests {
     }
 
     #[test]
-    fn colors_follow_thresholds() {
-        assert_eq!(remaining_color(Some(50.0)), COLOR_TEXT);
-        assert_eq!(remaining_color(Some(15.0)), COLOR_WARN);
-        assert_eq!(remaining_color(Some(5.0)), COLOR_DANGER);
-        assert_eq!(remaining_color(None), COLOR_FAINT);
-        assert_eq!(vram_color(Some(40.0)), COLOR_ACCENT);
-        assert_eq!(vram_color(Some(80.0)), COLOR_WARN);
-        assert_eq!(vram_color(Some(95.0)), COLOR_DANGER);
+    fn gauge_thresholds_follow_spec() {
+        // 스펙 §4: >50 정상, 20–50 주의, 10–20 경고, <=10 위험, 0 LIMIT.
+        assert_eq!(gauge_state(Some(94.0)), ApiGaugeState::Normal);
+        assert_eq!(gauge_state(Some(51.0)), ApiGaugeState::Normal);
+        assert_eq!(gauge_state(Some(50.0)), ApiGaugeState::Caution);
+        assert_eq!(gauge_state(Some(35.0)), ApiGaugeState::Caution);
+        assert_eq!(gauge_state(Some(20.1)), ApiGaugeState::Caution);
+        assert_eq!(gauge_state(Some(20.0)), ApiGaugeState::Warning);
+        assert_eq!(gauge_state(Some(15.0)), ApiGaugeState::Warning);
+        assert_eq!(gauge_state(Some(10.0)), ApiGaugeState::Critical);
+        assert_eq!(gauge_state(Some(7.0)), ApiGaugeState::Critical);
+        assert_eq!(gauge_state(Some(0.0)), ApiGaugeState::Limit);
+        assert_eq!(gauge_state(None), ApiGaugeState::Unknown);
+
+        assert_eq!(ApiGaugeState::Normal.fill_color(), Some(COLOR_ACCENT));
+        assert_eq!(ApiGaugeState::Caution.fill_color(), Some(COLOR_WARN));
+        assert_eq!(ApiGaugeState::Warning.fill_color(), Some(COLOR_ORANGE));
+        assert_eq!(ApiGaugeState::Critical.fill_color(), Some(COLOR_DANGER));
+        assert_eq!(ApiGaugeState::Limit.fill_color(), Some(COLOR_DANGER));
+        assert_eq!(ApiGaugeState::Auth.fill_color(), None);
+        assert_eq!(ApiGaugeState::Unknown.fill_color(), None);
+
+        // VRAM(사용률) 의미는 별도: 높은 사용률이 위험, GPU 사용률은 항상 accent.
+        assert_eq!(vram_gauge_color(Some(40.0)), COLOR_ACCENT);
+        assert_eq!(vram_gauge_color(Some(80.0)), COLOR_WARN);
+        assert_eq!(vram_gauge_color(Some(95.0)), COLOR_DANGER);
+    }
+
+    // ── 컴팩트 API 게이지(스펙 §1~§14) ───────────────────────────────
+
+    fn api_row(id: &str, remaining: Option<f64>, window: &str) -> DisplayApiRow {
+        DisplayApiRow {
+            id: id.into(),
+            label: id.into(),
+            primary_remaining_percent: remaining,
+            primary_label: window.into(),
+            status: "ok".into(),
+            age_secs: 10,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn codex_is_pinned_first_and_both_windows_render() {
+        // 스펙 §1 고정 우선순위 문서화(Codex > Antigravity > Grok > OpenCode).
+        assert_eq!(API_PIN_ORDER[0], "codex");
+        assert_eq!(API_PIN_ORDER[1], "antigravity");
+        assert!(API_PIN_ORDER.contains(&"grok"));
+        assert!(API_PIN_ORDER.contains(&"opencode"));
+        let (gauges, _) = build_api_gauges(&sample_snapshot().api_usage, API_GAUGE_LIMIT);
+        assert_eq!(gauges[0].label, "Codex");
+        assert_eq!(gauges[0].sublabel, "5h");
+        assert_eq!(gauges[0].remaining, Some(72.0));
+        assert_eq!(gauges[1].label, "Codex");
+        assert_eq!(gauges[1].sublabel, "Wk");
+        assert_eq!(gauges[1].remaining, Some(94.0));
+    }
+
+    #[test]
+    fn codex_survives_provider_sorting_with_lower_quotas() {
+        let mut rows: Vec<DisplayApiRow> = (0..20)
+            .map(|index| api_row(&format!("cred{index}"), Some(1.0), ""))
+            .collect();
+        rows.push(api_row("codex", Some(94.0), "Wk"));
+        let (gauges, _) = build_api_gauges(&rows, API_GAUGE_LIMIT);
+        assert!(
+            gauges.iter().any(|row| row.label == "Codex"),
+            "Codex는 낮은 잔여량 정렬로 사라지면 안 된다"
+        );
+        assert_eq!(gauges[0].label, "Codex");
+    }
+
+    #[test]
+    fn missing_codex_renders_auth_row_instead_of_omitting() {
+        let rows = vec![api_row("grok", Some(50.0), "Mo")];
+        let (gauges, _) = build_api_gauges(&rows, API_GAUGE_LIMIT);
+        assert_eq!(gauges[0].label, "Codex");
+        assert_eq!(gauges[0].state, ApiGaugeState::Auth);
+        assert_eq!(gauge_value_text(&gauges[0]), "AUTH");
+    }
+
+    #[test]
+    fn auth_failure_is_not_zero_quota() {
+        let row = DisplayApiRow {
+            id: "grok".into(),
+            label: "Grok".into(),
+            primary_remaining_percent: None,
+            primary_label: "Mo".into(),
+            status: "unavailable".into(),
+            age_secs: 10,
+            ..Default::default()
+        };
+        let gauges = expand_provider(&row, "Grok Bot");
+        assert_eq!(gauges.len(), 1);
+        assert_eq!(gauges[0].state, ApiGaugeState::Auth);
+        assert_eq!(gauges[0].remaining, None, "인증 실패를 0%로 만들지 않는다");
+        assert_eq!(gauges[0].state.fill_color(), None);
+        assert_eq!(gauge_value_text(&gauges[0]), "AUTH");
+    }
+
+    #[test]
+    fn stale_rows_are_marked_and_dimmed() {
+        let row = DisplayApiRow {
+            id: "codex".into(),
+            label: "Codex".into(),
+            primary_remaining_percent: Some(72.0),
+            primary_label: "Wk".into(),
+            status: "ok".into(),
+            age_secs: 3600,
+            ..Default::default()
+        };
+        let gauges = expand_provider(&row, "Codex");
+        assert!(gauges[0].stale);
+        assert!(gauge_value_text(&gauges[0]).contains("stale"));
+    }
+
+    #[test]
+    fn fill_width_represents_remaining_not_used() {
+        // 남은 94% -> 거의 가득, 남은 7% -> 거의 비어 있음(반전 금지).
+        assert_eq!(gauge_fill_width(300, Some(94.0)), 282);
+        assert!(gauge_fill_width(300, Some(94.0)) > gauge_fill_width(300, Some(7.0)));
+        assert_eq!(gauge_fill_width(300, Some(100.0)), 300);
+        assert_eq!(gauge_fill_width(300, Some(0.0)), 0);
+        assert_eq!(gauge_fill_width(300, None), 0);
+    }
+
+    #[test]
+    fn limit_and_critical_value_text() {
+        let limit = ApiGaugeRow {
+            label: "OpenCode".into(),
+            remaining: Some(0.0),
+            state: ApiGaugeState::Limit,
+            ..Default::default()
+        };
+        assert_eq!(gauge_value_text(&limit), "0% LIMIT");
+        let critical = ApiGaugeRow {
+            label: "OpenCode".into(),
+            remaining: Some(7.0),
+            state: ApiGaugeState::Critical,
+            ..Default::default()
+        };
+        assert_eq!(gauge_value_text(&critical), "! 7%");
+    }
+
+    #[test]
+    fn compact_gauge_rows_fit_320_width_without_clipping() {
+        let mut canvas = Canvas::new(320, 480);
+        let (gauges, _) = build_api_gauges(&sample_snapshot().api_usage, API_GAUGE_LIMIT);
+        let row_width = 320 - 20;
+        for gauge in &gauges {
+            let label = if gauge.sublabel.is_empty() {
+                gauge.label.clone()
+            } else {
+                format!("{} {}", gauge.label, gauge.sublabel)
+            };
+            let label_w = canvas.text_width(&truncate(&label, 18), 14, true);
+            let value_w = canvas.text_width(&gauge_value_text(gauge), 14, true);
+            assert!(
+                label_w + value_w + 12 + 24 <= row_width,
+                "라벨+값이 320px 행을 넘침: {label} (label={label_w}, value={value_w})"
+            );
+        }
+        // GDI 캔버스가 정상 종료되는지(그리기 경로 예외 없음)
+        let _ = canvas.finish();
+    }
+
+    #[test]
+    fn overflow_rows_are_counted() {
+        let (gauges, overflow) = build_api_gauges(&sample_snapshot().api_usage, API_GAUGE_LIMIT);
+        assert_eq!(gauges.len(), API_GAUGE_LIMIT);
+        assert_eq!(overflow, 3, "Grok Build + OpenCode Mo + OpenRouter");
+    }
+
+    #[test]
+    fn threshold_colors_are_drawn_in_compact_ai_section() {
+        // 샘플: 61/72/94 정상(accent), 35 주의(warn), 15 경고(orange), 7 위험(danger)
+        let frame = render(&sample_snapshot(), "single", Orientation::Portrait);
+        let has = |color: (u8, u8, u8)| {
+            frame
+                .chunks_exact(3)
+                .any(|pixel| pixel[0] == color.0 && pixel[1] == color.1 && pixel[2] == color.2)
+        };
+        assert!(has(COLOR_ACCENT), "정상 게이지(accent) 채움 필요");
+        assert!(has(COLOR_WARN), "주의 게이지(amber) 채움 필요");
+        assert!(has(COLOR_ORANGE), "경고 게이지(orange) 채움 필요");
+        assert!(has(COLOR_DANGER), "위험 게이지(red) 채움 필요");
+    }
+
+    #[test]
+    fn gauge_rows_do_not_overlap_footer() {
+        // 푸터 영역(y>=452)에 게이지 채움색이 침범하면 안 된다(마지막 행+오버플로 여유).
+        let frame = render(&sample_snapshot(), "single", Orientation::Portrait);
+        let width = 320usize;
+        for y in 452..480usize {
+            for x in 0..width {
+                let offset = (y * width + x) * 3;
+                let pixel = (frame[offset], frame[offset + 1], frame[offset + 2]);
+                assert_ne!(pixel, COLOR_ORANGE, "y={y} 에서 경고색 게이지가 푸터와 겹침");
+                assert_ne!(pixel, COLOR_DANGER, "y={y} 에서 위험색 게이지가 푸터와 겹침");
+                assert_ne!(pixel, COLOR_WARN, "y={y} 에서 주의색 게이지가 푸터와 겹침");
+            }
+        }
     }
 
     #[test]
