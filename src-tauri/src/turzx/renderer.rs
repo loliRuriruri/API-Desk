@@ -43,6 +43,12 @@ pub struct DisplayWorkload {
     pub kind: String,
     pub confidence: String,
     pub cpu_only: bool,
+    /// 프로세스의 헤드라인 GPU %(가장 바쁜 엔진). 없으면 N/A.
+    #[serde(default)]
+    pub gpu_percent: Option<f64>,
+    /// ai|game|graphics|browser|video|system|unknown
+    #[serde(default)]
+    pub classification: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
@@ -255,13 +261,25 @@ pub fn prioritize_api_rows(mut rows: Vec<DisplayApiRow>) -> Vec<DisplayApiRow> {
 /// 워크로드 정렬: 관리형 서비스 → VRAM 큰 순 → unknown. 최대 WORKLOAD_LIMIT.
 pub fn prioritize_workloads(mut rows: Vec<DisplayWorkload>) -> (Vec<DisplayWorkload>, usize) {
     rows.sort_by(|a, b| {
-        let rank = |kind: &str| match kind {
-            "managed_service" => 0,
-            "ollama" | "llama_cpp" | "vllm" | "comfyui" => 1,
-            _ => 2,
+        // 1) AI/관리 워크로드 우선, 2) GPU % → VRAM (엔진 합산 금지)
+        let rank = |row: &DisplayWorkload| -> u8 {
+            match row.classification.as_str() {
+                "ai" => 0,
+                _ => match row.kind.as_str() {
+                    "managed_service" | "ollama" | "llama_cpp" | "vllm" | "comfyui" | "laya_app" => 0,
+                    "unknown_ai" => 2,
+                    _ => 1,
+                },
+            }
         };
-        rank(&a.kind)
-            .cmp(&rank(&b.kind))
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| {
+                b.gpu_percent
+                    .unwrap_or(-1.0)
+                    .partial_cmp(&a.gpu_percent.unwrap_or(-1.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| b.vram_bytes.unwrap_or(0).cmp(&a.vram_bytes.unwrap_or(0)))
     });
     let overflow = rows.len().saturating_sub(WORKLOAD_LIMIT);
@@ -383,7 +401,7 @@ fn render_gpu_section(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, mut 
 
     canvas.line(10, y_pos, width - 10, y_pos, COLOR_SEPARATOR);
     y_pos += 8;
-    canvas.text("GPU MODELS", 12, y_pos, 13, COLOR_MUTED, true);
+    canvas.text("GPU PROCESSES", 12, y_pos, 13, COLOR_MUTED, true);
     y_pos += 20;
 
     let (rows, overflow) = prioritize_workloads(snapshot.workloads.clone());
@@ -393,9 +411,13 @@ fn render_gpu_section(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, mut 
     }
     for workload in rows {
         canvas.circle(16, y_pos + 8, 4, COLOR_ACCENT);
+        let gpu = workload
+            .gpu_percent
+            .map(|percent| format!("{}%", percent.round() as i64))
+            .unwrap_or_else(|| "N/A".into());
         let vram = format!("{} GB", format_gib(workload.vram_bytes));
         canvas.text(&truncate(&workload.service, 18), 27, y_pos, 15, COLOR_TEXT, true);
-        canvas.text_right(&vram, width - 12, y_pos, 14, COLOR_MUTED, false);
+        canvas.text_right(&format!("{gpu} · {vram}"), width - 12, y_pos, 14, COLOR_MUTED, false);
         y_pos += 20;
         if let Some(model) = workload.model.as_deref() {
             canvas.text(&truncate(model, 26), 33, y_pos, 12, COLOR_MUTED, false);
@@ -482,24 +504,50 @@ pub fn sample_snapshot() -> TurzxDisplaySnapshot {
                 model: Some("qwen3.5:9b".into()),
                 vram_bytes: None,
                 kind: "ollama".into(),
-                confidence: "medium".into(),
+                confidence: "exact".into(),
                 cpu_only: false,
+                gpu_percent: Some(16.0),
+                classification: "ai".into(),
             },
             DisplayWorkload {
                 service: "Laya".into(),
                 model: Some("english · multilingual · typed-decisions".into()),
                 vram_bytes: Some((1.4 * GIB) as u64),
                 kind: "managed_service".into(),
-                confidence: "high".into(),
+                confidence: "exact".into(),
                 cpu_only: false,
+                gpu_percent: Some(24.0),
+                classification: "ai".into(),
             },
             DisplayWorkload {
                 service: "ComfyUI".into(),
                 model: Some("sd_xl_base_1.0.safetensors".into()),
                 vram_bytes: Some((0.3 * GIB) as u64),
                 kind: "comfyui".into(),
-                confidence: "low".into(),
+                confidence: "medium".into(),
                 cpu_only: false,
+                gpu_percent: Some(8.0),
+                classification: "ai".into(),
+            },
+            DisplayWorkload {
+                service: "Granblue Fantasy: Relink".into(),
+                model: None,
+                vram_bytes: Some((6.1 * GIB) as u64),
+                kind: "game".into(),
+                confidence: "high".into(),
+                cpu_only: false,
+                gpu_percent: Some(71.0),
+                classification: "game".into(),
+            },
+            DisplayWorkload {
+                service: "msedge.exe".into(),
+                model: None,
+                vram_bytes: Some((0.8 * GIB) as u64),
+                kind: "browser".into(),
+                confidence: "high".into(),
+                cpu_only: false,
+                gpu_percent: Some(3.0),
+                classification: "browser".into(),
             },
         ],
         api_usage: vec![
@@ -672,9 +720,11 @@ mod tests {
         ];
         let (kept, overflow) = prioritize_workloads(rows);
         assert_eq!(kept.len(), WORKLOAD_LIMIT);
-        assert_eq!(kept[0].service, "Laya");
-        assert_eq!(kept[1].service, "Ollama");
-        assert_eq!(kept[2].service, "vLLM");
+        // AI 랭크 안에서는 GPU % → VRAM; unknown_ai는 최하위라 밀려난다.
+        assert_eq!(kept[0].service, "Ollama");
+        assert_eq!(kept[1].service, "vLLM");
+        assert_eq!(kept[2].service, "Laya");
+        assert!(kept.iter().all(|row| row.kind != "unknown_ai"));
         assert_eq!(overflow, 1);
     }
 

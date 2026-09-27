@@ -1,7 +1,9 @@
 mod envfile;
 mod error;
 mod export;
+mod gpu_meta;
 mod gpu_monitor;
+mod gpu_pdh;
 mod http_test;
 mod local_services;
 mod migrations;

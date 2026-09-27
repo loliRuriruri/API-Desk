@@ -263,15 +263,11 @@ pub(crate) fn build_snapshot(app: &AppHandle) -> TurzxDisplaySnapshot {
     let workloads: Vec<renderer::DisplayWorkload> = gpu_snapshot
         .processes
         .iter()
-        .filter(|process| !process.process_name.is_empty())
-        .filter(|process| process.service_kind != "other")
+        .filter(|process| !process.display_name.is_empty() && process.classification != "system")
         .map(|process| renderer::DisplayWorkload {
-            service: process
-                .service
-                .clone()
-                .unwrap_or_else(|| process.process_name.clone()),
+            service: process.display_name.clone(),
             model: if process.models.is_empty() {
-                None
+                process.runtime.clone()
             } else {
                 Some(process.models.join(" · "))
             },
@@ -279,6 +275,8 @@ pub(crate) fn build_snapshot(app: &AppHandle) -> TurzxDisplaySnapshot {
             kind: process.service_kind.clone(),
             confidence: process.confidence.clone(),
             cpu_only: false,
+            gpu_percent: process.gpu_percent,
+            classification: process.classification.clone(),
         })
         .collect();
     TurzxDisplaySnapshot {

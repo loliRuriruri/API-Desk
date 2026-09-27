@@ -2574,13 +2574,30 @@ kbd {
 
 .gpu-process-row {
   display: grid;
-  grid-template-columns: 62px 1.1fr 1.3fr 1fr 78px;
+  grid-template-columns: 56px minmax(140px, 1.5fr) 56px 84px 62px 68px minmax(140px, 1.4fr);
   gap: 8px;
   align-items: center;
   padding: 3px 6px;
   border-radius: 4px;
   font-size: 11.5px;
   min-width: 0;
+}
+
+.gpu-process-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0 2px;
+}
+
+.gpu-process-sort {
+  display: flex;
+  gap: 4px;
+}
+
+.gpu-process-idle {
+  opacity: 0.75;
 }
 
 .gpu-process-row:nth-child(even) {

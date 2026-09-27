@@ -1194,9 +1194,6 @@ fn powershell_encoded(script: &str) -> String {
 }
 
 /// 다른 모듈(GPU 모니터 등)에서 PowerShell을 조용히 실행할 때 사용.
-pub fn run_powershell_hidden(script: &str) -> Result<String, AppError> {
-    run_powershell(script)
-}
 
 fn run_powershell(script: &str) -> Result<String, AppError> {
     let encoded = powershell_encoded(script);

@@ -4,9 +4,11 @@ import { GaugeBar } from "./Gauge";
 import { errorMessage } from "../lib/errors";
 import {
   attributionLabel,
+  engineLabel,
   formatBytes,
   gpuSnapshot,
   modelsLabel,
+  runtimeLabel,
   topWorkloads,
   vramPercent,
   vramTone,
@@ -104,11 +106,17 @@ export function GpuMiniCard({ onOpenDetail }: GpuMiniCardProps) {
 
       {rows.map((process) => {
         const models = modelsLabel(process);
+        const runtime = runtimeLabel(process);
+        const engine = engineLabel(process.dominantEngine);
         return (
-          <div className="mini-gpu-row" key={`${process.pid}-${process.serviceKind}`}>
+          <div className="mini-gpu-row" key={process.pid}>
             <span className="mini-gpu-row-main">
               <span>{attributionLabel(process)}</span>
-              {models ? <span className="mini-gpu-models mono">{models}</span> : null}
+              <span className="mini-gpu-sub mono">
+                {process.gpuPercent !== null ? `${Math.round(process.gpuPercent)}%` : "N/A"}
+                {engine !== "N/A" ? ` · ${engine}` : ""}
+                {models ? ` · ${models}` : ` · ${runtime}`}
+              </span>
             </span>
             <span className="mono">{formatBytes(process.usedVramBytes)}</span>
           </div>
@@ -116,7 +124,7 @@ export function GpuMiniCard({ onOpenDetail }: GpuMiniCardProps) {
       })}
       {otherCount > 0 ? (
         <div className="mini-gpu-row">
-          <span className="mini-gpu-row-main">Other</span>
+          <span className="mini-gpu-row-main">그 외</span>
           <span className="mono">{otherCount}개</span>
         </div>
       ) : null}
