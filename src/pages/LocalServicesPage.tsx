@@ -4,6 +4,7 @@ import { EmptyState } from "../components/EmptyState";
 import { GpuMonitorPanel } from "../components/GpuMonitorPanel";
 import { useToast } from "../components/ToastProvider";
 import { useAsyncData } from "../hooks/useAsyncData";
+import { LayaEnvironmentSection } from "../components/LayaEnvironmentSection";
 import { errorMessage } from "../lib/errors";
 import {
   apiKeyLabel,
@@ -374,6 +375,10 @@ export function LocalServicesPage() {
                 </div>
               ) : null}
             </div>
+
+            {status.id === "laya" ? (
+              <LayaEnvironmentSection onChanged={() => void refreshAll()} />
+            ) : null}
 
             <div className="api-key-row">
               <input

@@ -68,7 +68,12 @@ pub fn definitions() -> Vec<LocalServiceDefinition> {
         default_port: 8000,
         default_device: "cuda".into(),
         device_env: "LAYA_DEVICE".into(),
-        static_env: vec![env_var("USE_TF", "0"), env_var("LAYA_PRELOAD", "1")],
+        static_env: vec![
+            env_var("USE_TF", "0"),
+            env_var("LAYA_PRELOAD", "1"),
+            // TileLang JIT: 최신 MSVC에서도 nvcc가 호스트 컴파일러를 받아들이도록
+            env_var("NVCC_APPEND_FLAGS", "-allow-unsupported-compiler"),
+        ],
         secret_env: "LAYA_API_KEY".into(),
         secret_id: "local:laya:api_key".into(),
         api_key_label: "LAYA_API_KEY".into(),
@@ -106,6 +111,15 @@ pub struct ServiceConfig {
     /// API 키를 저장한 적이 있는지(비밀 값 아님). Vault가 잠겨 있어도 알 수 있어야 한다.
     #[serde(default)]
     pub api_key_configured: bool,
+    /// 환경 매니저 메타데이터(하위 호환: 없으면 빈 값).
+    #[serde(default)]
+    pub runtime_root: String,
+    #[serde(default)]
+    pub python_executable: String,
+    #[serde(default)]
+    pub environment_kind: String,
+    #[serde(default)]
+    pub environment_version: String,
 }
 
 fn default_true() -> bool {
@@ -152,6 +166,10 @@ impl ServiceConfig {
             auto_start: self.auto_start,
             keep_alive_on_exit: self.keep_alive_on_exit,
             api_key_configured: self.api_key_configured,
+            runtime_root: self.runtime_root.trim().to_string(),
+            python_executable: self.python_executable.trim().to_string(),
+            environment_kind: self.environment_kind.trim().to_string(),
+            environment_version: self.environment_version.trim().to_string(),
         }
     }
 }
@@ -655,6 +673,107 @@ pub fn local_service_configs(app: AppHandle) -> Vec<ServiceConfig> {
                 .merged(&def)
         })
         .collect()
+}
+
+// ---------------------------------------------------------------- 환경 매니저 연동
+
+pub(crate) fn service_config(app: &AppHandle, id: &str) -> Result<ServiceConfig, AppError> {
+    merged_config(app, id).map(|(_, config)| config)
+}
+
+/// 환경 매니저가 활성 실행 파일/메타데이터를 갱신한다(원자적 파일 교체 + 이벤트).
+pub(crate) fn save_service_config(
+    app: &AppHandle,
+    config: ServiceConfig,
+    environment_version: Option<&str>,
+    environment_kind: &str,
+) -> Result<(), AppError> {
+    let def = definition(&config.id)
+        .ok_or_else(|| AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id)))?;
+    let mut merged = config.merged(&def);
+    if merged.environment_version.trim().is_empty() {
+        if let Some(version) = environment_version {
+            merged.environment_version = version.to_string();
+        }
+    }
+    if !environment_kind.trim().is_empty() {
+        merged.environment_kind = environment_kind.to_string();
+    }
+    if merged.python_executable.trim().is_empty() {
+        merged.python_executable = merged.executable.clone();
+    }
+    if merged.runtime_root.trim().is_empty() {
+        merged.runtime_root = PathBuf::from(&merged.executable)
+            .parent()
+            .and_then(|scripts| scripts.parent())
+            .map(|dir| dir.to_string_lossy().to_string())
+            .unwrap_or_default();
+    }
+    let mut stored = read_configs(app);
+    stored.retain(|item| item.id != merged.id);
+    stored.push(merged);
+    write_configs(app, &stored)?;
+    emit_status_changed(app);
+    Ok(())
+}
+
+pub(crate) fn restore_service_config(app: &AppHandle, config: ServiceConfig) -> Result<(), AppError> {
+    let def = definition(&config.id)
+        .ok_or_else(|| AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id)))?;
+    let merged = config.merged(&def);
+    let mut stored = read_configs(app);
+    stored.retain(|item| item.id != merged.id);
+    stored.push(merged);
+    write_configs(app, &stored)?;
+    emit_status_changed(app);
+    Ok(())
+}
+
+/// 활성화/롤백용: 중지 후 포트가 풀릴 때까지 기다린다.
+pub(crate) fn stop_service_for_activation(app: &AppHandle, id: &str) -> Result<(), AppError> {
+    let state = app.state::<LocalServicesState>();
+    let vault = app.state::<VaultState>();
+    let config = service_config(app, id)?;
+    let managed = state.processes.lock().unwrap().contains_key(id);
+    if !config.executable.is_empty() || managed {
+        let _ = stop_service(app, &state, &vault, id);
+    }
+    let _ = wait_for_port_free(config.port, 6_000);
+    Ok(())
+}
+
+pub(crate) fn start_service_for_activation(app: &AppHandle, id: &str) -> Result<(), AppError> {
+    let state = app.state::<LocalServicesState>();
+    let vault = app.state::<VaultState>();
+    let status = start_service(app, &state, &vault, id)?;
+    if status.state != "running" && status.state != "starting" {
+        return Err(AppError::InvalidRequest(format!("서비스 시작 실패: {}", status.state)));
+    }
+    Ok(())
+}
+
+/// 환경 매니저 검증용: 구성된 서비스 시크릿(없거나 잠금이면 None). 절대 로그에 남기지 않는다.
+pub(crate) fn secret_for_probe(app: &AppHandle, id: &str) -> Option<String> {
+    let def = definition(id)?;
+    let vault = app.state::<VaultState>();
+    if !vault_unlocked(&vault) {
+        return None;
+    }
+    crate::vault::read_secret_string(&vault, &def.secret_id)
+        .ok()
+        .map(|value| value.to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// 환경 매니저가 사용하는 요약 상태(실행 여부, PID).
+pub(crate) fn service_runtime(app: &AppHandle, id: &str) -> (bool, Option<u32>) {
+    let state = app.state::<LocalServicesState>();
+    let vault = app.state::<VaultState>();
+    build_status(app, &state, &vault)
+        .into_iter()
+        .find(|item| item.id == id)
+        .map(|item| (item.state == "running", item.pid))
+        .unwrap_or((false, None))
 }
 
 #[tauri::command]

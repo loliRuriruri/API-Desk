@@ -2719,3 +2719,55 @@ kbd {
   color: var(--danger, #e5484d);
   font-size: 12px;
 }
+
+
+/* ── Laya 환경 매니저 ─────────────────────────────────────────── */
+.laya-env {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2, rgba(0, 0, 0, 0.15));
+}
+
+.laya-env-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.laya-env-grid {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.laya-env-problems {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--warning, #f5be50);
+  font-size: 12px;
+}
+
+.laya-env-log {
+  max-height: 140px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.laya-env-log-line.running { color: var(--text-muted); }
+.laya-env-log-line.done { color: var(--ok, #4ade80); }
+.laya-env-log-line.failed { color: var(--danger, #eb6076); }
+
+.laya-env-result {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.8;
+}

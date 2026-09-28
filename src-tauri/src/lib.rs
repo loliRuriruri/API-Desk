@@ -5,6 +5,7 @@ mod gpu_meta;
 mod gpu_monitor;
 mod gpu_pdh;
 mod http_test;
+mod laya_env;
 mod local_services;
 mod migrations;
 mod model_import;
@@ -229,6 +230,7 @@ pub fn run() {
         .manage(TrayState::new())
         .manage(LaunchState::new())
         .manage(local_services::LocalServicesState::new())
+        .manage(laya_env::LayaEnvState::new())
         .manage(gpu_monitor::GpuMonitorState::default())
         .manage(turzx::TurzxState::default())
         .setup(|app| {
@@ -329,6 +331,15 @@ pub fn run() {
             monitors::monitor_antigravity_save_current,
             monitors::monitor_antigravity_switch_account,
             monitors::monitor_antigravity_delete_account,
+            laya_env::laya_env_status,
+            laya_env::laya_env_check_updates,
+            laya_env::laya_env_create_gpu,
+            laya_env::laya_env_cancel,
+            laya_env::laya_env_busy,
+            laya_env::laya_env_list,
+            laya_env::laya_env_activate,
+            laya_env::laya_env_rollback,
+            laya_env::laya_env_benchmark,
             local_services::local_service_definitions,
             local_services::local_service_configs,
             local_services::local_service_save_config,
