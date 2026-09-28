@@ -114,6 +114,17 @@ describe("gaugesForMonitor", () => {
     expect(items[0].mode).toBe("used");
     expect(items[2].percent).toBe(54);
     expect(items[0].hint).toContain("리셋");
+
+    const caseA = gaugesForMonitor(
+      "opencode",
+      JSON.stringify({
+        rolling: { usedPercent: 0, resetInSec: 3600 },
+        weekly: { usedPercent: 6, resetsAt: "2026-10-05T00:00:00Z" },
+        monthly: { usedPercent: 100, resetAt: "2026-10-10T13:15:30Z" },
+      }),
+    );
+    expect(caseA.map((item) => item.percent)).toEqual([0, 6, 100]);
+    expect(caseA.every((item) => item.mode === "used")).toBe(true);
   });
 
   it("returns an empty list for unknown monitors or bad json", () => {

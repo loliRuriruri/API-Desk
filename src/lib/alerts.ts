@@ -87,6 +87,22 @@ export function monitorRemainingPercent(
     return null;
   }
   if (monitor === "opencode") {
+    const effective = number(details.effectiveRemainingPercent);
+    if (effective !== null) return effective;
+    const windowRemaining = (entry: unknown): number | null => {
+      if (typeof entry !== "object" || entry === null) return null;
+      const obj = entry as Record<string, unknown>;
+      const remaining = number(obj.remainingPercent);
+      if (remaining !== null) return remaining;
+      const used = number(obj.usedPercent) ?? number(obj.percent);
+      if (used !== null) return Math.max(0, 100 - used);
+      return null;
+    };
+    const rolling = windowRemaining(details.rolling);
+    const weekly = windowRemaining(details.weekly);
+    const monthly = windowRemaining(details.monthly);
+    const active = [rolling, weekly, monthly].filter((v): v is number => v !== null);
+    if (active.length > 0) return Math.min(...active);
     return number(details.remainingPercent);
   }
   if (monitor === "antigravity" || monitor.startsWith("antigravity:")) {

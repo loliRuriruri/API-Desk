@@ -282,45 +282,64 @@ pub fn normalize_monitor_row(monitor: &str, details_json: Option<&str>) -> Optio
             }
         }
         "opencode" => {
-            // 주간(Wk) 창을 primary로 노출하고 리셋 시각을 함께 담는다.
+            // OpenCode Go: 단일 진실 소스(Single Source of Truth) — effectiveRemainingPercent 및 limitingWindow 반영
             let now = now_secs();
-            let window = |key: &str| -> Option<(Option<f64>, Option<i64>)> {
-                let entry = details.get(key)?;
-                Some((
-                    remaining_from_used(number(entry.get("percent"))),
-                    value_secs(Some(entry), &["resetsAt", "resetInSec"], now),
-                ))
+            let window_entry = |key: &str| -> Option<(Option<f64>, Option<i64>)> {
+                let entry = details.get(key).filter(|v| !v.is_null())?;
+                let used = number(entry.get("usedPercent")).or_else(|| number(entry.get("percent")));
+                let remaining = number(entry.get("remainingPercent")).or_else(|| remaining_from_used(used));
+                let reset = value_secs(Some(entry), &["resetAt", "resetsAt", "resetInSec"], now);
+                Some((remaining, reset))
             };
-            let mut others: Vec<(String, f64, Option<i64>)> = Vec::new();
-            for (key, label) in [("rolling", "Ro"), ("monthly", "Mo")] {
-                if let Some((Some(remaining), reset)) = window(key) {
-                    others.push((label.to_string(), remaining, reset));
+
+            let rolling = window_entry("rolling");
+            let weekly = window_entry("weekly");
+            let monthly = window_entry("monthly");
+
+            let top_effective = number(details.get("effectiveRemainingPercent"));
+            let top_limiting = details.get("limitingWindow").and_then(Value::as_str);
+
+            let mut active_windows: Vec<(&str, &str, f64, Option<i64>)> = Vec::new();
+            for (key, label, entry) in [
+                ("rolling", "Ro", &rolling),
+                ("weekly", "Wk", &weekly),
+                ("monthly", "Mo", &monthly),
+            ] {
+                if let Some((Some(rem), reset)) = entry {
+                    active_windows.push((key, label, *rem, *reset));
                 }
             }
-            match window("weekly") {
-                Some((Some(remaining), reset)) => {
-                    row.primary_label = "Wk".into();
-                    row.primary_remaining_percent = Some(remaining);
-                    row.primary_reset_in_secs = reset;
+
+            let limiting = if let Some(key) = top_limiting {
+                active_windows.iter().find(|(k, _, _, _)| *k == key).cloned()
+            } else {
+                active_windows
+                    .iter()
+                    .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                    .cloned()
+            };
+
+            let effective_remaining = top_effective
+                .or_else(|| limiting.as_ref().map(|(_, _, rem, _)| *rem))
+                .or_else(|| number(details.get("remainingPercent")));
+
+            if let Some((lim_key, label, rem, reset)) = limiting {
+                row.primary_label = label.to_string();
+                row.primary_remaining_percent = effective_remaining.or(Some(rem));
+                row.primary_reset_in_secs = reset;
+
+                if let Some((_, sec_label, sec_rem, sec_reset)) = active_windows
+                    .iter()
+                    .filter(|(k, _, _, _)| *k != lim_key)
+                    .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                {
+                    row.secondary_label = sec_label.to_string();
+                    row.secondary_remaining_percent = Some(*sec_rem);
+                    row.secondary_reset_in_secs = *sec_reset;
                 }
-                _ => {
-                    if let Some((label, remaining, reset)) = others
-                        .iter()
-                        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                    {
-                        row.primary_label = label.clone();
-                        row.primary_remaining_percent = Some(*remaining);
-                        row.primary_reset_in_secs = *reset;
-                    }
-                }
-            }
-            if let Some((label, remaining, reset)) = others
-                .iter()
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            {
-                row.secondary_label = label.clone();
-                row.secondary_remaining_percent = Some(*remaining);
-                row.secondary_reset_in_secs = *reset;
+            } else if let Some(effective) = effective_remaining {
+                row.primary_label = "Wk".into();
+                row.primary_remaining_percent = Some(effective);
             }
         }
         _ => return None,
@@ -1110,14 +1129,14 @@ pub fn sample_snapshot() -> TurzxDisplaySnapshot {
                 age_secs: 45,
                 ..Default::default()
             },
-            // OpenCode Go 주간 25% + 리셋 10시간.
+            // OpenCode Go: 주간 25%가 limiting (월간 70%).
             DisplayApiRow {
                 id: "opencode".into(),
                 label: "OpenCode".into(),
                 primary_remaining_percent: Some(25.0),
                 primary_label: "Wk".into(),
                 primary_reset_in_secs: Some(36_000),
-                secondary_remaining_percent: Some(7.0),
+                secondary_remaining_percent: Some(70.0),
                 secondary_label: "Mo".into(),
                 amount_text: None,
                 status: "ok".into(),
@@ -1536,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_prefers_weekly_window_with_reset() {
+    fn opencode_selects_limiting_window_across_all_windows() {
         let details = serde_json::json!({
             "rolling": {"percent": 12, "resetsAt": "2026-09-27T14:40:04Z"},
             "weekly": {"percent": 75, "resetsAt": "2026-09-28T00:00:00Z"},
@@ -1544,11 +1563,39 @@ mod tests {
         })
         .to_string();
         let row = normalize_monitor_row("opencode", Some(&details)).unwrap();
-        assert_eq!(row.primary_label, "Wk");
-        assert_eq!(row.primary_remaining_percent, Some(25.0));
+        // 남은 값: rolling 88%, weekly 25%, monthly 7% -> 월간 7%가 limiting!
+        assert_eq!(row.primary_label, "Mo");
+        assert_eq!(row.primary_remaining_percent, Some(7.0));
         assert!(row.primary_reset_in_secs.is_some());
-        assert_eq!(row.secondary_label, "Mo");
-        assert_eq!(row.secondary_remaining_percent, Some(7.0));
+        assert_eq!(row.secondary_label, "Wk");
+        assert_eq!(row.secondary_remaining_percent, Some(25.0));
+    }
+
+    #[test]
+    fn opencode_exhausted_monthly_shows_limit_in_turzx() {
+        // CASE A / Real account: rolling used = 0 (rem 100), weekly used = 6 (rem 94), monthly used = 100 (rem 0)
+        let details = serde_json::json!({
+            "rolling": {"percent": 0, "resetsAt": "2026-09-29T10:00:00Z"},
+            "weekly": {"percent": 6, "resetsAt": "2026-10-05T00:00:00Z"},
+            "monthly": {"percent": 100, "resetsAt": "2026-10-10T13:15:30Z"},
+            "effectiveRemainingPercent": 0.0,
+            "limitingWindow": "monthly",
+            "limitReached": true
+        })
+        .to_string();
+        let row = normalize_monitor_row("opencode", Some(&details)).unwrap();
+        assert_eq!(row.primary_label, "Mo");
+        assert_eq!(row.primary_remaining_percent, Some(0.0));
+        assert!(row.primary_reset_in_secs.is_some());
+        assert_eq!(row.secondary_label, "Wk");
+        assert_eq!(row.secondary_remaining_percent, Some(94.0));
+
+        let (gauges, _) = build_api_gauges(&[row], 5);
+        let opencode_gauge = gauges.iter().find(|g| g.label == "OpenCode").unwrap();
+        assert_eq!(opencode_gauge.sublabel, "Mo");
+        assert_eq!(opencode_gauge.remaining, Some(0.0));
+        assert_eq!(opencode_gauge.state, ApiGaugeState::Limit);
+        assert!(gauge_value_text(opencode_gauge).starts_with("0% LIMIT"));
     }
 
     #[test]

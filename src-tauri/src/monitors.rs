@@ -960,18 +960,18 @@ fn format_reset_in(seconds: i64) -> String {
     }
 }
 
-pub fn parse_opencode_usage(body: &Value) -> Option<(String, Value, f64)> {
+pub fn parse_opencode_usage(body: &Value) -> Option<(String, Value, Option<f64>)> {
     let usage = body.get("usage")?;
     let window = |key: &str| -> Option<Value> {
-        usage.get(key).map(|entry| entry.clone())
+        usage.get(key).cloned().filter(|v| !v.is_null())
     };
-    let rolling = window("rolling")?;
+    let rolling = window("rolling");
     let weekly = window("weekly");
     let monthly = window("monthly");
     let percent = |value: &Option<Value>| -> Option<f64> {
         value
             .as_ref()
-            .and_then(|entry| entry.get("percent"))
+            .and_then(|entry| entry.get("percent").or_else(|| entry.get("usedPercent")))
             .and_then(Value::as_f64)
     };
     let label = |value: &Option<Value>, label: &str| -> Option<String> {
@@ -986,42 +986,96 @@ pub fn parse_opencode_usage(body: &Value) -> Option<(String, Value, f64)> {
         })
     };
 
-    let rolling_label = label(&Some(rolling.clone()), "롤링")?;
+    let rolling_label = label(&rolling, "롤링");
     let weekly_label = label(&weekly, "주간");
     let monthly_label = label(&monthly, "월간");
-    let mut parts = vec![rolling_label];
+    let mut parts = Vec::new();
+    if let Some(value) = rolling_label {
+        parts.push(value);
+    }
     if let Some(value) = weekly_label {
         parts.push(value);
     }
     if let Some(value) = monthly_label {
         parts.push(value);
     }
-    let summary = format!("OpenCode Go {}", parts.join(" · "));
+    let summary = if parts.is_empty() {
+        "OpenCode Go (쿼터 정보 없음)".to_string()
+    } else {
+        format!("OpenCode Go {}", parts.join(" · "))
+    };
 
-    let max_used = [percent(&Some(rolling.clone())), percent(&weekly), percent(&monthly)]
-        .into_iter()
-        .flatten()
-        .fold(0.0_f64, f64::max);
-    let remaining = clamp_percent(100.0 - max_used);
+    let rolling_used = percent(&rolling);
+    let weekly_used = percent(&weekly);
+    let monthly_used = percent(&monthly);
+
+    let rolling_rem = rolling_used.map(|u| clamp_percent(100.0 - u));
+    let weekly_rem = weekly_used.map(|u| clamp_percent(100.0 - u));
+    let monthly_rem = monthly_used.map(|u| clamp_percent(100.0 - u));
+
+    let active_windows: Vec<(&str, f64, f64)> = [
+        ("rolling", rolling_used, rolling_rem),
+        ("weekly", weekly_used, weekly_rem),
+        ("monthly", monthly_used, monthly_rem),
+    ]
+    .into_iter()
+    .filter_map(|(key, used, rem)| match (used, rem) {
+        (Some(u), Some(r)) => Some((key, u, r)),
+        _ => None,
+    })
+    .collect();
+
+    let (effective_remaining, limiting_window, limit_reached, max_used) = if active_windows.is_empty() {
+        (None, None, false, None)
+    } else {
+        let limit_reached = active_windows.iter().any(|(_, _, rem)| *rem <= 0.0);
+        let min_entry = active_windows
+            .iter()
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap();
+        let max_used = active_windows
+            .iter()
+            .map(|(_, u, _)| *u)
+            .fold(0.0_f64, f64::max);
+        let eff = if limit_reached { 0.0 } else { min_entry.2 };
+        (Some(eff), Some(min_entry.0.to_string()), limit_reached, Some(max_used))
+    };
 
     let details = json!({
-        "rolling": to_usage_entry(&Some(rolling)),
+        "rolling": to_usage_entry(&rolling),
         "weekly": to_usage_entry(&weekly),
         "monthly": to_usage_entry(&monthly),
+        "effectiveRemainingPercent": effective_remaining,
+        "limitingWindow": limiting_window,
+        "limitReached": limit_reached,
+        "remainingPercent": effective_remaining,
         "maxUsedPercent": max_used,
-        "remainingPercent": remaining,
     });
-    Some((summary, details, remaining))
+    Some((summary, details, effective_remaining))
 }
 
 fn to_usage_entry(value: &Option<Value>) -> Value {
     match value {
-        Some(entry) => json!({
-            "percent": entry.get("percent").and_then(Value::as_f64),
-            "status": entry.get("status").and_then(Value::as_str),
-            "resetsAt": entry.get("resetsAt").and_then(Value::as_str),
-            "resetInSec": reset_in_seconds(entry),
-        }),
+        Some(entry) => {
+            let used = entry
+                .get("percent")
+                .or_else(|| entry.get("usedPercent"))
+                .and_then(Value::as_f64);
+            let remaining = used.map(|u| clamp_percent(100.0 - u));
+            let resets_at = entry
+                .get("resetsAt")
+                .or_else(|| entry.get("resetAt"))
+                .and_then(Value::as_str);
+            json!({
+                "percent": used,
+                "usedPercent": used,
+                "remainingPercent": remaining,
+                "status": entry.get("status").and_then(Value::as_str),
+                "resetsAt": resets_at,
+                "resetAt": resets_at,
+                "resetInSec": reset_in_seconds(entry),
+            })
+        }
         None => Value::Null,
     }
 }
@@ -2085,8 +2139,102 @@ Spawning: language_server.exe --csrf_token BBB-222
         assert!(summary.contains("주간 8%"));
         assert!(summary.contains("월간 54%"));
         assert_eq!(details["monthly"]["percent"], json!(54.0));
-        assert_eq!(remaining, 46.0);
+        assert_eq!(remaining, Some(46.0));
+        assert_eq!(details["effectiveRemainingPercent"], json!(46.0));
+        assert_eq!(details["limitingWindow"], json!("monthly"));
+        assert_eq!(details["limitReached"], json!(false));
         assert!(details["rolling"]["resetInSec"].is_number());
+    }
+
+    #[test]
+    fn parses_opencode_quota_cases_a_through_f() {
+        // CASE A: rolling used = 0, weekly used = 6, monthly used = 100
+        let case_a = json!({
+            "usage": {
+                "rolling": { "percent": 0 },
+                "weekly": { "percent": 6 },
+                "monthly": { "percent": 100 }
+            }
+        });
+        let (_, details_a, rem_a) = parse_opencode_usage(&case_a).unwrap();
+        assert_eq!(details_a["rolling"]["remainingPercent"], json!(100.0));
+        assert_eq!(details_a["weekly"]["remainingPercent"], json!(94.0));
+        assert_eq!(details_a["monthly"]["remainingPercent"], json!(0.0));
+        assert_eq!(rem_a, Some(0.0));
+        assert_eq!(details_a["effectiveRemainingPercent"], json!(0.0));
+        assert_eq!(details_a["limitingWindow"], json!("monthly"));
+        assert_eq!(details_a["limitReached"], json!(true));
+
+        // CASE B: rolling used = 80, weekly used = 20, monthly used = 30
+        let case_b = json!({
+            "usage": {
+                "rolling": { "percent": 80 },
+                "weekly": { "percent": 20 },
+                "monthly": { "percent": 30 }
+            }
+        });
+        let (_, details_b, rem_b) = parse_opencode_usage(&case_b).unwrap();
+        assert_eq!(details_b["rolling"]["remainingPercent"], json!(20.0));
+        assert_eq!(details_b["weekly"]["remainingPercent"], json!(80.0));
+        assert_eq!(details_b["monthly"]["remainingPercent"], json!(70.0));
+        assert_eq!(rem_b, Some(20.0));
+        assert_eq!(details_b["effectiveRemainingPercent"], json!(20.0));
+        assert_eq!(details_b["limitingWindow"], json!("rolling"));
+        assert_eq!(details_b["limitReached"], json!(false));
+
+        // CASE C: rolling null, weekly used = 6, monthly used = 100
+        let case_c = json!({
+            "usage": {
+                "rolling": null,
+                "weekly": { "percent": 6 },
+                "monthly": { "percent": 100 }
+            }
+        });
+        let (_, details_c, rem_c) = parse_opencode_usage(&case_c).unwrap();
+        assert_eq!(rem_c, Some(0.0));
+        assert_eq!(details_c["effectiveRemainingPercent"], json!(0.0));
+        assert_eq!(details_c["limitingWindow"], json!("monthly"));
+        assert_eq!(details_c["limitReached"], json!(true));
+
+        // CASE D: rolling 0, weekly 6, monthly null
+        let case_d = json!({
+            "usage": {
+                "rolling": { "percent": 0 },
+                "weekly": { "percent": 6 },
+                "monthly": null
+            }
+        });
+        let (_, details_d, rem_d) = parse_opencode_usage(&case_d).unwrap();
+        assert_eq!(rem_d, Some(94.0));
+        assert_eq!(details_d["effectiveRemainingPercent"], json!(94.0));
+        assert_eq!(details_d["limitingWindow"], json!("weekly"));
+        assert_eq!(details_d["limitReached"], json!(false));
+
+        // CASE E: all null
+        let case_e = json!({
+            "usage": {
+                "rolling": null,
+                "weekly": null,
+                "monthly": null
+            }
+        });
+        let (_, details_e, rem_e) = parse_opencode_usage(&case_e).unwrap();
+        assert_eq!(rem_e, None);
+        assert_eq!(details_e["effectiveRemainingPercent"], Value::Null);
+        assert_eq!(details_e["limitingWindow"], Value::Null);
+        assert_eq!(details_e["limitReached"], json!(false));
+
+        // CASE F: monthly 100
+        let case_f = json!({
+            "usage": {
+                "monthly": { "percent": 100 }
+            }
+        });
+        let (_, details_f, rem_f) = parse_opencode_usage(&case_f).unwrap();
+        assert_eq!(rem_f, Some(0.0));
+        assert_eq!(details_f["effectiveRemainingPercent"], json!(0.0));
+        assert_eq!(details_f["limitingWindow"], json!("monthly"));
+        assert_eq!(details_f["limitReached"], json!(true));
     }
 
     #[test]
@@ -2155,7 +2303,7 @@ Spawning: language_server.exe --csrf_token BBB-222
 
     #[test]
     fn refreshes_opencode_from_local_db_when_present() {
-        if opencode_db_path().is_none() {
+        if opencode_db_path().is_none() && opencode_auth_path().is_none() {
             return;
         }
         let outcome = tauri::async_runtime::block_on(refresh_opencode()).unwrap();
@@ -2176,6 +2324,10 @@ Spawning: language_server.exe --csrf_token BBB-222
                 "summary: {}",
                 outcome.summary
             );
+            assert_eq!(details["effectiveRemainingPercent"], json!(0.0));
+            assert_eq!(details["limitingWindow"], json!("monthly"));
+            assert_eq!(details["limitReached"], json!(true));
+            assert_eq!(details["remainingPercent"], json!(0.0));
         }
     }
 

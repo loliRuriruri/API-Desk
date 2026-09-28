@@ -230,12 +230,15 @@ export function gaugesForMonitor(
     ] as const) {
       const entry = details[key] as Record<string, unknown> | null | undefined;
       if (!entry) continue;
-      const percent = number(entry.percent);
+      const percent = number(entry.usedPercent) ?? number(entry.percent);
       items.push({
         label,
         percent,
         mode: "used",
-        hint: resetHintFromSeconds(entry.resetInSec),
+        hint:
+          resetHintFromSeconds(entry.resetInSec) ??
+          resetHint(entry.resetsAt as string | undefined) ??
+          resetHint(entry.resetAt as string | undefined),
       });
     }
     return items;
