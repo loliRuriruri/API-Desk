@@ -61,7 +61,7 @@ export function GpuMiniCard({ onOpenDetail }: GpuMiniCardProps) {
   if (!snapshot) {
     return (
       <div className="mini-gpu">
-        <span className="mini-note">GPU 정보 불러오는 중…</span>
+        <span className="mini-note">GPU 모니터 시작 중…</span>
       </div>
     );
   }

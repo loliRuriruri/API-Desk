@@ -9,11 +9,15 @@ import {
   confidenceLabel,
   engineLabel,
   formatBytes,
+  gpuRestartSampler,
+  gpuRuntimeStatus,
   gpuSnapshot,
   modelsLabel,
   runtimeLabel,
+  runtimeNotice,
   sortProcesses,
   sourcesLabel,
+  type GpuRuntimeStatus,
   type GpuSnapshot,
   type ProcessSortKey,
   vramPercent,
@@ -33,14 +37,23 @@ function unavailableText(snapshot: GpuSnapshot | null): string {
 
 export function GpuMonitorPanel() {
   const [snapshot, setSnapshot] = useState<GpuSnapshot | null>(null);
+  const [runtime, setRuntime] = useState<GpuRuntimeStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [sortKey, setSortKey] = useState<ProcessSortKey>("gpu");
+  const [waitedMs, setWaitedMs] = useState(0);
+  const [restarting, setRestarting] = useState(false);
 
   useEffect(() => {
     let active = true;
     const tick = async () => {
       if (document.visibilityState !== "visible") return;
+      // 런타임 상태는 스냅샷 조회가 지연/실패해도 독립적으로 갱신한다(무한 스피너 방지).
+      void gpuRuntimeStatus()
+        .then((status) => {
+          if (active) setRuntime(status);
+        })
+        .catch(() => {});
       try {
         const data = await gpuSnapshot("main", true);
         if (!active) return;
@@ -52,11 +65,13 @@ export function GpuMonitorPanel() {
     };
     void tick();
     const timer = window.setInterval(() => void tick(), POLL_MS);
+    const waited = window.setInterval(() => setWaitedMs((current) => current + 1_000), 1_000);
     const onVisibility = () => void tick();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
       window.clearInterval(timer);
+      window.clearInterval(waited);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
@@ -73,13 +88,43 @@ export function GpuMonitorPanel() {
   }
 
   if (!snapshot || !snapshot.available) {
+    const notice = runtimeNotice(runtime);
+    const pending =
+      waitedMs < 5_000 && !error && runtime?.state !== "error" && runtime?.state !== "degraded";
     return (
       <section className="panel gpu-card">
         <header className="panel-header">
           <h3>GPU · VRAM</h3>
-          {snapshot ? <Badge tone="muted">사용 불가</Badge> : null}
+          {pending ? (
+            <Badge tone="muted">시작 중</Badge>
+          ) : (
+            <Badge tone="danger">확인 필요</Badge>
+          )}
         </header>
-        <p className="panel-hint">{unavailableText(snapshot)}</p>
+        <p className="panel-hint">
+          {pending ? "GPU 모니터 시작 중…" : notice ?? error ?? unavailableText(snapshot)}
+        </p>
+        {!pending ? (
+          <div className="row-actions">
+            <button
+              type="button"
+              className="button button-small"
+              disabled={restarting}
+              onClick={() => {
+                setRestarting(true);
+                void gpuRestartSampler()
+                  .then((status) => {
+                    setRuntime(status);
+                    setWaitedMs(0);
+                  })
+                  .catch((err) => setError(errorMessage(err)))
+                  .finally(() => setRestarting(false));
+              }}
+            >
+              {restarting ? "재시작 중…" : "GPU 모니터 재시도"}
+            </button>
+          </div>
+        ) : null}
       </section>
     );
   }
@@ -95,6 +140,9 @@ export function GpuMonitorPanel() {
           {snapshot.source} · {snapshot.processes.length}개 프로세스
         </span>
       </header>
+      {runtime?.state === "degraded" ? (
+        <p className="panel-hint">⚠ {runtimeNotice(runtime)}</p>
+      ) : null}
 
       {snapshot.gpus.map((info) => {
         const percent = vramPercent(info);

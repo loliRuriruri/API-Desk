@@ -10,6 +10,7 @@ mod local_services;
 mod migrations;
 mod model_import;
 mod monitors;
+mod resident;
 mod turzx;
 mod usage;
 mod vault;
@@ -232,6 +233,7 @@ pub fn run() {
         .manage(local_services::LocalServicesState::new())
         .manage(laya_env::LayaEnvState::new())
         .manage(gpu_monitor::GpuMonitorState::default())
+        .manage(resident::ResidentState::default())
         .manage(turzx::TurzxState::default())
         .setup(|app| {
             let autostart = launched_from_autostart(std::env::args());
@@ -242,6 +244,20 @@ pub fn run() {
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || vault::run_auto_unlock(handle));
+            }
+            // 상주 런타임: 창/프런트엔드와 무관하게 백엔드가 수집기를 소유·가동한다.
+            {
+                resident::log(app.handle(), "resident", "starting");
+                gpu_monitor::start_sampler(app.handle());
+                resident::start_usage_scheduler(app.handle());
+                let started = local_services::autostart_services(app.handle());
+                if !started.is_empty() {
+                    resident::log(
+                        app.handle(),
+                        "services",
+                        &format!("autostart: {}", started.join(",")),
+                    );
+                }
             }
             build_tray(app.handle())?;
             if !autostart {
@@ -355,6 +371,9 @@ pub fn run() {
             local_services::local_service_login_startup_plan,
             gpu_monitor::gpu_snapshot,
             gpu_monitor::gpu_process_details,
+            gpu_monitor::gpu_runtime_status,
+            gpu_monitor::gpu_restart_sampler,
+            resident::resident_status,
             turzx::turzx_settings,
             turzx::turzx_save_settings,
             turzx::turzx_status,

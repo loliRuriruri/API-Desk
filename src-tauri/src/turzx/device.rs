@@ -183,6 +183,19 @@ mod tests {
     }
 
     #[test]
+    fn detects_same_device_after_com_number_change() {
+        // 재부팅으로 COM 번호가 바뀌어도 VID/PID/시리얼로 동일 장치를 찾는다.
+        let ports = vec![
+            usb("COM3", 0x264A, 0x233D, None),
+            usb("COM7", V2_VID, V2_PID, Some(V2_SERIAL)),
+        ];
+        let list = candidates_from(&ports);
+        assert_eq!(list[0].port, "COM7");
+        assert_eq!(list[0].score, 100);
+        assert!(list[0].known_device);
+    }
+
+    #[test]
     fn usb_serial_without_v2_ids_still_scored() {
         let ports = vec![usb("COM9", 0x0001, 0x0002, Some(V2_SERIAL))];
         let list = candidates_from(&ports);

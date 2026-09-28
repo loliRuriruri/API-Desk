@@ -188,6 +188,12 @@ struct QueryHandles {
 unsafe impl Send for QueryHandles {}
 
 static QUERY: Mutex<Option<Option<QueryHandles>>> = Mutex::new(None);
+/// 마지막 collect에서 rate(사용률) 데이터가 준비되었는지(진단용).
+static RATES_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn last_rates_ready() -> bool {
+    RATES_READY.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 #[cfg(not(windows))]
 pub fn collect() -> PdhSnapshot {
@@ -237,6 +243,7 @@ pub fn collect() -> PdhSnapshot {
             }
         }
 
+        RATES_READY.store(rates_ready, std::sync::atomic::Ordering::Relaxed);
         PdhSnapshot {
             rates_ready,
             processes,
@@ -404,6 +411,17 @@ mod tests {
         let entry = map.get(&5).unwrap();
         assert_eq!(entry.dedicated_bytes, Some(1024));
         assert_eq!(entry.shared_bytes, Some(2048));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pdh_rates_ready_after_second_sample() {
+        let _ = collect();
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let second = collect();
+        // 두 번째 샘플부터 rate 데이터가 준비된다(첫 샘플은 N/A가 정상).
+        assert!(second.rates_ready, "두 번째 샘플은 rates_ready=true");
+        assert!(last_rates_ready());
     }
 
     #[test]

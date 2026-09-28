@@ -473,13 +473,34 @@ pub async fn fetch_usage(
     extra_secret_id: Option<String>,
     timeout_ms: Option<u64>,
 ) -> Result<UsageOutcome, AppError> {
-    let secret = vault::read_secret_string(&state, &secret_id)
+    fetch_usage_with(
+        &state,
+        &adapter,
+        base_url.as_deref(),
+        &secret_id,
+        extra_secret_id.as_deref(),
+        timeout_ms,
+    )
+    .await
+}
+
+/// 백엔드 상주 스케줄러와 커맨드가 공유하는 사용량 조회 구현.
+pub(crate) async fn fetch_usage_with(
+    vault_state: &VaultState,
+    adapter: &str,
+    base_url: Option<&str>,
+    secret_id: &str,
+    extra_secret_id: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<UsageOutcome, AppError> {
+    let base_url = base_url.map(|value| value.to_string());
+    let secret = vault::read_secret_string(vault_state, secret_id)
         .map_err(|_| AppError::SecretNotFound)?
         .to_string();
     let extra_secret = extra_secret_id
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .and_then(|id| vault::read_secret_string(&state, id).ok())
+        .and_then(|id| vault::read_secret_string(vault_state, id).ok())
         .map(|value| value.to_string());
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(2_000, 30_000));
@@ -489,7 +510,7 @@ pub async fn fetch_usage(
         .build()
         .map_err(|e| AppError::Network(e.to_string()))?;
 
-    let result = match adapter.as_str() {
+    let result = match adapter {
         "openrouter" => {
             let base = base_url
                 .filter(|value| !value.trim().is_empty())
@@ -672,6 +693,7 @@ pub async fn fetch_usage(
         secret.zeroize();
     }
     result
+
 }
 
 #[cfg(test)]

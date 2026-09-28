@@ -1107,30 +1107,31 @@ pub fn local_service_clear_api_key(
     Ok(())
 }
 
+/// 상주 시작: autoStart 서비스(키가 필요한 서비스는 Vault 잠금 시 백엔드가 차단)를 시작한다.
+pub(crate) fn autostart_services(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<LocalServicesState>();
+    let vault = app.state::<VaultState>();
+    let mut started = Vec::new();
+    for status in build_status(app, &state, &vault) {
+        if !status.auto_start || status.state != "stopped" || !status.executable_set {
+            continue;
+        }
+        if start_service(app, &state, &vault, &status.id).is_ok() {
+            started.push(status.id);
+        }
+    }
+    if !started.is_empty() {
+        emit_status_changed(app);
+    }
+    started
+}
+
 #[tauri::command]
 pub async fn local_service_autostart(app: AppHandle) -> Vec<String> {
     let handle = app.clone();
-    let started = tauri::async_runtime::spawn_blocking(move || {
-        let state = handle.state::<LocalServicesState>();
-        let vault = handle.state::<VaultState>();
-        let mut started = Vec::new();
-        let statuses = build_status(&handle, &state, &vault);
-        for status in statuses {
-            if !status.auto_start || status.state != "stopped" || !status.executable_set {
-                continue;
-            }
-            if start_service(&handle, &state, &vault, &status.id).is_ok() {
-                started.push(status.id);
-            }
-        }
-        started
-    })
-    .await
-    .unwrap_or_default();
-    if !started.is_empty() {
-        emit_status_changed(&app);
-    }
-    started
+    tauri::async_runtime::spawn_blocking(move || autostart_services(&handle))
+        .await
+        .unwrap_or_default()
 }
 
 pub fn shutdown(app: &AppHandle) {

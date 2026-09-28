@@ -1349,11 +1349,26 @@ fn refresh_snapshot(app: &AppHandle) -> GpuSnapshot {
 
 // ---------------------------------------------------------------- commands
 
+/// 백엔드 상주 GPU 샘플러 상태(프런트엔드와 무관).
+#[derive(Serialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuRuntimeStatus {
+    /// starting | ready | degraded | error
+    pub state: String,
+    pub last_sample_at: Option<String>,
+    pub last_error: Option<String>,
+    pub nvml_ready: bool,
+    pub pdh_ready: bool,
+    pub samples: u64,
+}
+
 pub struct GpuMonitorState {
     cache: Mutex<Option<(GpuSnapshot, Instant)>>,
     meta: MetaCache,
     ollama: Mutex<Option<(Vec<String>, Instant)>>,
     health: Mutex<Option<(Vec<String>, Instant)>>,
+    runtime: Mutex<GpuRuntimeStatus>,
+    sampler_running: std::sync::atomic::AtomicBool,
 }
 
 impl Default for GpuMonitorState {
@@ -1363,8 +1378,134 @@ impl Default for GpuMonitorState {
             meta: MetaCache::default(),
             ollama: Mutex::new(None),
             health: Mutex::new(None),
+            runtime: Mutex::new(GpuRuntimeStatus {
+                state: "starting".into(),
+                ..Default::default()
+            }),
+            sampler_running: std::sync::atomic::AtomicBool::new(false),
         }
     }
+}
+
+/// 연속 실패 횟수 → 런타임 상태(순수, 테스트 가능).
+pub fn runtime_state_name(consecutive_failures: u32) -> &'static str {
+    match consecutive_failures {
+        0 => "ready",
+        1 | 2 => "degraded",
+        _ => "error",
+    }
+}
+
+fn set_runtime(app: &AppHandle, update: impl FnOnce(&mut GpuRuntimeStatus)) {
+    if let Some(state) = app.try_state::<GpuMonitorState>() {
+        if let Ok(mut status) = state.runtime.lock() {
+            update(&mut status);
+        }
+    }
+}
+
+pub fn runtime_status(app: &AppHandle) -> GpuRuntimeStatus {
+    app.try_state::<GpuMonitorState>()
+        .and_then(|state| state.runtime.lock().ok().map(|status| status.clone()))
+        .unwrap_or_default()
+}
+
+/// 백엔드 시작 시 GPU 샘플러를 소유/가동한다(창·프런트엔드 불필요).
+pub fn start_sampler(app: &AppHandle) {
+    let state = app.state::<GpuMonitorState>();
+    if state
+        .sampler_running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        return;
+    }
+    set_runtime(app, |status| {
+        status.state = "starting".into();
+        status.last_error = None;
+    });
+    crate::resident::log(app, "gpu", "sampler starting");
+    let handle = app.clone();
+    std::thread::spawn(move || sampler_loop(handle));
+}
+
+fn sampler_loop(app: AppHandle) {
+    let mut consecutive_failures: u32 = 0;
+    let mut first_pass = true;
+    loop {
+        let stop = app
+            .try_state::<GpuMonitorState>()
+            .map(|state| !state.sampler_running.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(true);
+        if stop {
+            break;
+        }
+        // cached_snapshot(app, 0) → 항상 새로 수집해 캐시에 게시한다.
+        let snapshot = cached_snapshot(&app, 0);
+        let now = now_iso();
+        if snapshot.available {
+            consecutive_failures = 0;
+            let nvml_ready = snapshot.source == "nvml";
+            let pdh_ready = gpu_pdh::last_rates_ready();
+            set_runtime(&app, |status| {
+                status.state = "ready".into();
+                status.last_sample_at = Some(now.clone());
+                status.last_error = None;
+                status.nvml_ready = nvml_ready;
+                status.pdh_ready = pdh_ready;
+                status.samples = status.samples.saturating_add(1);
+            });
+            if first_pass {
+                crate::resident::log(
+                    &app,
+                    "gpu",
+                    &format!(
+                        "nvml={} pdh_rates={} snapshot ready ({}개 프로세스)",
+                        nvml_ready,
+                        pdh_ready,
+                        snapshot.processes.len()
+                    ),
+                );
+            }
+        } else {
+            consecutive_failures += 1;
+            let detail = snapshot
+                .detail
+                .clone()
+                .or_else(|| snapshot.reason.clone())
+                .unwrap_or_else(|| "GPU 정보를 사용할 수 없습니다".into());
+            let state_name = runtime_state_name(consecutive_failures);
+            set_runtime(&app, |status| {
+                status.state = state_name.into();
+                status.last_error = Some(detail.clone());
+                status.nvml_ready = false;
+                status.pdh_ready = gpu_pdh::last_rates_ready();
+            });
+            if first_pass || consecutive_failures == 3 {
+                crate::resident::log(&app, "gpu", &format!("샘플 실패: {detail}"));
+            }
+        }
+        first_pass = false;
+        // 첫 샘플 직후에는 rate 카운터 확보를 위해 짧게, 이후 1초 주기.
+        let sleep_ms = if consecutive_failures >= 3 { 5_000 } else { 1_000 };
+        std::thread::sleep(Duration::from_millis(sleep_ms));
+    }
+}
+
+#[tauri::command]
+pub fn gpu_runtime_status(app: AppHandle) -> GpuRuntimeStatus {
+    runtime_status(&app)
+}
+
+#[tauri::command]
+pub fn gpu_restart_sampler(app: AppHandle) -> GpuRuntimeStatus {
+    if let Some(state) = app.try_state::<GpuMonitorState>() {
+        state
+            .sampler_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    std::thread::sleep(Duration::from_millis(120));
+    start_sampler(&app);
+    runtime_status(&app)
 }
 
 #[tauri::command]
@@ -1381,11 +1522,15 @@ pub async fn gpu_snapshot(
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<GpuMonitorState>();
+        let sampler_active = state
+            .sampler_running
+            .load(std::sync::atomic::Ordering::Relaxed);
         {
             let cache = state.cache.lock().unwrap();
             if let Some((snapshot, at)) = cache.as_ref() {
                 let fresh = at.elapsed().as_millis() as u64 <= ttl;
-                if fresh || !visible {
+                // 백엔드 샘플러가 돌고 있으면 캐시는 항상 최신(1초 주기)이다.
+                if fresh || !visible || sampler_active {
                     return snapshot.clone();
                 }
             }
@@ -1833,6 +1978,15 @@ mod tests {
         assert_eq!(value["processes"][0]["classification"], "ai");
         assert_eq!(value["processes"][0]["runtime"], "CUDA / Compute");
         assert!(value["processes"][0].get("commandLine").is_none());
+    }
+
+    #[test]
+    fn derives_runtime_state_from_failures() {
+        assert_eq!(runtime_state_name(0), "ready");
+        assert_eq!(runtime_state_name(1), "degraded");
+        assert_eq!(runtime_state_name(2), "degraded");
+        assert_eq!(runtime_state_name(3), "error");
+        assert_eq!(runtime_state_name(9), "error");
     }
 
     #[test]

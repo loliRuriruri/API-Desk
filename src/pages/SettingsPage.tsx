@@ -34,6 +34,7 @@ import {
   vaultStatus,
   type VaultStatus,
 } from "../lib/vault";
+import { residentStatus, type ResidentStatus } from "../lib/gpuMonitor";
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -69,6 +70,8 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [thresholds, setThresholds] = useState<AlertThresholds>({});
   const [vaultInfo, setVaultInfo] = useState<VaultStatus | null>(null);
+  const [resident, setResident] = useState<ResidentStatus | null>(null);
+  const [residentLogOpen, setResidentLogOpen] = useState(false);
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [enrollPassword, setEnrollPassword] = useState("");
   const [enrollBusy, setEnrollBusy] = useState(false);
@@ -77,6 +80,7 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
     void getAutostart().then(setAutostartEnabled);
     void loadAlertThresholds().then(setThresholds);
     void vaultStatus().then(setVaultInfo);
+    void residentStatus().then(setResident).catch(() => {});
   }, []);
 
   const enrollAutoUnlock = async () => {
@@ -496,6 +500,80 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
       </section>
 
       <TurzxSettingsSection />
+
+      <section className="panel">
+        <header className="panel-header">
+          <h3>상주 런타임</h3>
+          <span className="panel-hint">창/클릭과 무관하게 백엔드가 소유</span>
+        </header>
+        <table className="table table-compact">
+          <tbody>
+            <tr>
+              <td>GPU Monitor</td>
+              <td className="mono">
+                {resident
+                  ? `${resident.gpu.state}${
+                      resident.gpu.nvmlReady && resident.gpu.pdhReady ? " · NVML+PDH" : ""
+                    }${resident.gpu.lastError ? ` · ${resident.gpu.lastError}` : ""}`
+                  : "확인 중…"}
+              </td>
+            </tr>
+            <tr>
+              <td>TURZX</td>
+              <td className="mono">
+                {resident?.turzx
+                  ? resident.turzx.connected
+                    ? `${resident.turzx.port ?? "-"} · Connected (${resident.turzx.model ?? "?"})`
+                    : resident.turzx.enabled === false
+                      ? "비활성"
+                      : `연결 안 됨${resident.turzx.lastError ? ` · ${resident.turzx.lastError}` : ""}`
+                  : "확인 중…"}
+              </td>
+            </tr>
+            <tr>
+              <td>API Tracker</td>
+              <td className="mono">
+                {resident
+                  ? resident.usage.ready
+                    ? `Ready · 마지막 갱신 ${resident.usage.lastRefreshAt ?? "-"} (${resident.usage.updated}건)`
+                    : "Vault 잠금 대기"
+                  : "확인 중…"}
+              </td>
+            </tr>
+            {resident?.services?.map((service) => (
+              <tr key={service.id}>
+                <td>{service.label}</td>
+                <td className="mono">
+                  {service.running ? `Running (PID ${service.pid ?? "-"})` : "Stopped"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="row-actions">
+          <button
+            type="button"
+            className="button button-small"
+            onClick={() => void residentStatus().then(setResident).catch(() => {})}
+          >
+            새로고침
+          </button>
+          <button
+            type="button"
+            className="button button-small button-ghost"
+            onClick={() => setResidentLogOpen((current) => !current)}
+          >
+            {residentLogOpen ? "로그 닫기" : "시작 로그"}
+          </button>
+        </div>
+        {residentLogOpen ? (
+          <div className="laya-env-log mono">
+            {(resident?.log ?? []).slice(-30).map((line, index) => (
+              <div key={`${line}-${index}`}>{line}</div>
+            ))}
+          </div>
+        ) : null}
+      </section>
 
       <section className="panel">
         <header className="panel-header">

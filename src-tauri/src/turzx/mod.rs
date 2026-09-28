@@ -475,6 +475,8 @@ fn worker_loop(app: AppHandle) {
     let mut previous_frame: Option<Vec<u8>> = None;
     let mut page_index = 0usize;
     let mut last_page_switch = Instant::now();
+    let mut scan_logged = 0u8;
+    let mut last_logged_port = String::new();
 
     loop {
         let state = match app.try_state::<TurzxState>() {
@@ -493,6 +495,21 @@ fn worker_loop(app: AppHandle) {
         // 연결 보장
         if port.is_none() {
             let detected = device::detect(Some(&settings.port));
+            if scan_logged == 0 {
+                crate::resident::log(&app, "turzx", "scanning serial devices");
+            }
+            if let Some(found) = detected.as_ref() {
+                if found.port != last_logged_port {
+                    crate::resident::log(
+                        &app,
+                        "turzx",
+                        &format!("candidate {} ({}) score={}", found.port, found.description, found.score),
+                    );
+                    last_logged_port = found.port.clone();
+                }
+            } else {
+                scan_logged = 1;
+            }
             let Some(candidate) = detected else {
                 set_status(&app, |status| {
                     status.connected = false;
@@ -514,11 +531,25 @@ fn worker_loop(app: AppHandle) {
                 Ok((opened, model, orientation))
             }) {
                 Ok((opened, model, configured_orientation)) => {
+                    crate::resident::log(
+                        &app,
+                        "turzx",
+                        &format!("connected {} ({})", candidate.port, model.label()),
+                    );
                     port = Some(opened);
                     orientation = configured_orientation;
                     applied_brightness = settings.brightness;
                     previous_frame = None;
                     backoff_index = 0;
+                    // 텔레메트리가 준비되기 전에도 화면이 비지 않도록 부팅 프레임을 즉시 그린다.
+                    let (boot_w, boot_h) = orientation.size();
+                    if let Some(active) = port.as_mut() {
+                        let boot = renderer::render_boot(boot_w, boot_h);
+                        let rect = send_region(active, &boot, boot_w as usize, 0, 0, boot_w as usize - 1, boot_h as usize - 1);
+                        if rect.is_ok() {
+                            crate::resident::log(&app, "turzx", "boot frame sent");
+                        }
+                    }
                     let resolution = format!("{}x{}", orientation.size().0, orientation.size().1);
                     set_status(&app, |status| {
                         status.connected = true;
@@ -593,6 +624,7 @@ fn worker_loop(app: AppHandle) {
 
         let outcome = (|| -> Result<(usize, &'static str), AppError> {
             let active = port.as_mut().ok_or_else(|| AppError::Io("포트 없음".into()))?;
+            let full_reset = previous_frame.is_none();
             let rect = match previous_frame.as_deref() {
                 // 첫 프레임(또는 재연결 직후)은 전체 전송
                 None => Some((0u16, 0u16, width - 1, height - 1)),
@@ -606,6 +638,9 @@ fn worker_loop(app: AppHandle) {
                     } else {
                         "partial"
                     };
+                    if kind == "full" && full_reset {
+                        crate::resident::log(&app, "turzx", "full redraw complete");
+                    }
                     let sent = send_region(
                         active,
                         &frame,

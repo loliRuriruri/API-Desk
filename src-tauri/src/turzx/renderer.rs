@@ -698,6 +698,23 @@ fn local_hhmm() -> String {
     }
 }
 
+/// 연결 직후 즉시 보여주는 부팅 프레임(텔레메트리 준비 전 빈 화면 방지).
+pub fn render_boot(width: u16, height: u16) -> Vec<u8> {
+    let mut canvas = Canvas::new(width, height);
+    canvas.rect(0, 0, width as i32, height as i32, COLOR_BG);
+    let center_x = width as i32 / 2;
+    canvas.text("API DESK", center_x - 78, (height as i32 / 2) - 60, 30, COLOR_ACCENT, true);
+    canvas.text("Starting...", center_x - 42, (height as i32 / 2) - 16, 18, COLOR_TEXT, false);
+    let rows = [("GPU", "loading"), ("VRAM", "loading"), ("API", "cached / loading")];
+    let mut y = (height as i32 / 2) + 34;
+    for (label, value) in rows {
+        canvas.text(label, 20, y, 14, COLOR_MUTED, true);
+        canvas.text_right(value, width as i32 - 20, y, 14, COLOR_FAINT, false);
+        y += 22;
+    }
+    canvas.finish().to_vec()
+}
+
 pub fn render(snapshot: &TurzxDisplaySnapshot, page: &str, orientation: Orientation) -> Vec<u8> {
     let (width, height) = orientation.size();
     let mut canvas = Canvas::new(width, height);
@@ -1127,6 +1144,17 @@ mod tests {
         assert_eq!(landscape.len(), 480 * 320 * 3);
         // 배경색이 실제로 칠해졌는지(첫 픽셀)
         assert_eq!(&portrait[0..3], &[COLOR_BG.0, COLOR_BG.1, COLOR_BG.2]);
+    }
+
+    #[test]
+    fn renders_boot_frame_without_telemetry() {
+        let frame = render_boot(320, 480);
+        assert_eq!(frame.len(), 320 * 480 * 3);
+        // 배경색만이 아니라 텍스트/값이 그려져야 한다.
+        let has_accent = frame
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] == COLOR_ACCENT.0 && pixel[1] == COLOR_ACCENT.1 && pixel[2] == COLOR_ACCENT.2);
+        assert!(has_accent, "부팅 프레임에 API DESK 텍스트(accent) 필요");
     }
 
     #[test]

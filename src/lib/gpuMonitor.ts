@@ -249,3 +249,63 @@ export async function gpuProcessDetails(): Promise<{
 }> {
   return invoke<{ processes: GpuProcess[]; otherCount: number }>("gpu_process_details");
 }
+
+export interface GpuRuntimeStatus {
+  state: "starting" | "ready" | "degraded" | "error" | string;
+  lastSampleAt: string | null;
+  lastError: string | null;
+  nvmlReady: boolean;
+  pdhReady: boolean;
+  samples: number;
+}
+
+/** 백엔드 상주 샘플러 상태(프런트가 수집기를 초기화하지 않는다). */
+export async function gpuRuntimeStatus(): Promise<GpuRuntimeStatus> {
+  return invoke<GpuRuntimeStatus>("gpu_runtime_status");
+}
+
+export async function gpuRestartSampler(): Promise<GpuRuntimeStatus> {
+  return invoke<GpuRuntimeStatus>("gpu_restart_sampler");
+}
+
+export interface ResidentServiceStatus {
+  id: string;
+  label: string;
+  running: boolean;
+  pid: number | null;
+}
+
+export interface ResidentStatus {
+  log: string[];
+  gpu: GpuRuntimeStatus;
+  turzx: {
+    connected?: boolean;
+    port?: string | null;
+    model?: string | null;
+    resolution?: string;
+    lastError?: string | null;
+    enabled?: boolean;
+  } | null;
+  usage: {
+    ready: boolean;
+    lastRefreshAt: string | null;
+    lastError: string | null;
+    updated: number;
+  };
+  services: ResidentServiceStatus[];
+}
+
+export async function residentStatus(): Promise<ResidentStatus> {
+  return invoke<ResidentStatus>("resident_status");
+}
+
+/** 패널/미니에 표시할 수집기 상태 문구. */
+export function runtimeNotice(status: GpuRuntimeStatus | null): string | null {
+  if (!status) return null;
+  if (status.state === "ready") return null;
+  if (status.state === "starting") return "GPU 모니터 시작 중…";
+  if (status.state === "degraded") {
+    return status.lastError ? `GPU 모니터 경고: ${status.lastError}` : "GPU 모니터 경고 (일부 값 누락)";
+  }
+  return status.lastError ? `GPU 모니터 오류: ${status.lastError}` : "GPU 모니터 오류";
+}
