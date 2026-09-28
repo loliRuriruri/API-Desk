@@ -12,6 +12,7 @@ mod monitors;
 mod turzx;
 mod usage;
 mod vault;
+mod vault_autounlock;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -235,6 +236,11 @@ pub fn run() {
             app.state::<LaunchState>()
                 .autostart
                 .store(autostart, Ordering::Relaxed);
+            // 비밀번호 없는 시작: UI/클릭과 무관하게 백그라운드에서 DPAPI 자동 잠금해제를 시도한다.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || vault::run_auto_unlock(handle));
+            }
             build_tray(app.handle())?;
             if !autostart {
                 // Refresh the autostart registration so it carries the
@@ -295,6 +301,8 @@ pub fn run() {
             open_mini_window_command,
             show_main_window,
             vault::vault_status,
+            vault::vault_enroll_auto_unlock,
+            vault::vault_retry_auto_unlock,
             vault::vault_init,
             vault::vault_unlock,
             vault::vault_lock,

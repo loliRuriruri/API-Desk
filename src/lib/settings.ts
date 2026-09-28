@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   alertsEnabled: true,
   alertThresholdPercent: 20,
   openMiniOnStart: false,
-  autoLockMinutes: 15,
+  autoLockMinutes: 0,
 };
 
 const KEYS: Record<keyof AppSettings, string> = {

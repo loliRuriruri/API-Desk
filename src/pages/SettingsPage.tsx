@@ -28,7 +28,12 @@ import {
   writeTextFile,
   type ExportEntryInput,
 } from "../lib/system";
-import { vaultReset } from "../lib/vault";
+import {
+  vaultEnrollAutoUnlock,
+  vaultReset,
+  vaultStatus,
+  type VaultStatus,
+} from "../lib/vault";
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -63,11 +68,35 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
   const [exportBusy, setExportBusy] = useState(false);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [thresholds, setThresholds] = useState<AlertThresholds>({});
+  const [vaultInfo, setVaultInfo] = useState<VaultStatus | null>(null);
+  const [enrollOpen, setEnrollOpen] = useState(false);
+  const [enrollPassword, setEnrollPassword] = useState("");
+  const [enrollBusy, setEnrollBusy] = useState(false);
 
   useEffect(() => {
     void getAutostart().then(setAutostartEnabled);
     void loadAlertThresholds().then(setThresholds);
+    void vaultStatus().then(setVaultInfo);
   }, []);
+
+  const enrollAutoUnlock = async () => {
+    if (enrollPassword.length === 0) {
+      notify("마스터 비밀번호를 입력하세요.", "error");
+      return;
+    }
+    setEnrollBusy(true);
+    try {
+      await vaultEnrollAutoUnlock(enrollPassword);
+      setEnrollPassword("");
+      setEnrollOpen(false);
+      setVaultInfo(await vaultStatus());
+      notify("자동 잠금해제를 다시 등록했습니다.", "info");
+    } catch (error) {
+      notify(errorMessage(error), "error");
+    } finally {
+      setEnrollBusy(false);
+    }
+  };
 
   const { data: thresholdItems } = useAsyncData(async () => {
     const [probes, credentials] = await Promise.all([
@@ -470,6 +499,44 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
 
       <section className="panel">
         <header className="panel-header">
+          <h3>보안</h3>
+        </header>
+        <dl className="path-list">
+          <div>
+            <dt>자동 잠금해제</dt>
+            <dd>
+              {vaultInfo?.autoUnlock === "ready"
+                ? "Windows 사용자 보호(DPAPI) ✓"
+                : vaultInfo
+                  ? `사용할 수 없음 (${vaultInfo.autoUnlock})`
+                  : "확인 중…"}
+            </dd>
+          </div>
+          <div>
+            <dt>Vault</dt>
+            <dd>암호화됨 ✓ (IOTA Stronghold)</dd>
+          </div>
+        </dl>
+        <p className="form-hint">
+          마스터 비밀번호는 Windows DPAPI(CurrentUser)로 보호되어 이 PC·이 사용자 계정에서만
+          자동으로 잠금 해제됩니다. 비밀번호 원문은 저장·전송되지 않습니다.
+        </p>
+        <div className="row-actions">
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              setEnrollPassword("");
+              setEnrollOpen(true);
+            }}
+          >
+            자동 잠금해제 다시 등록
+          </button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <header className="panel-header">
           <h3>백업 및 내보내기</h3>
         </header>
         <div className="row-actions">
@@ -600,6 +667,42 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
               onChange={(event) => setExportConfirmed(event.target.checked)}
             />
             <span>위 내용을 이해했고 평문 내보내기에 동의합니다</span>
+          </label>
+        </Modal>
+      ) : null}
+
+      {enrollOpen ? (
+        <Modal
+          title="자동 잠금해제 다시 등록"
+          onClose={() => setEnrollOpen(false)}
+          footer={
+            <>
+              <button type="button" className="button" onClick={() => setEnrollOpen(false)}>
+                취소
+              </button>
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={enrollBusy}
+                onClick={() => void enrollAutoUnlock()}
+              >
+                {enrollBusy ? "등록 중…" : "등록"}
+              </button>
+            </>
+          }
+        >
+          <p className="form-hint">
+            현재 마스터 비밀번호를 한 번 입력하면 Windows 사용자 보호(DPAPI)로 다시 등록합니다.
+            Vault 데이터는 변경되지 않습니다.
+          </p>
+          <label className="field">
+            <span>마스터 비밀번호</span>
+            <input
+              type="password"
+              value={enrollPassword}
+              autoFocus
+              onChange={(event) => setEnrollPassword(event.target.value)}
+            />
           </label>
         </Modal>
       ) : null}

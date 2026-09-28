@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Sidebar, type PageKey } from "./components/Sidebar";
 import { SearchPalette } from "./components/SearchPalette";
-import { ToastProvider, useToast } from "./components/ToastProvider";
+import { ToastProvider } from "./components/ToastProvider";
 import { ApisPage } from "./pages/ApisPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ImportPage } from "./pages/ImportPage";
@@ -10,7 +10,7 @@ import { ModelsPage } from "./pages/ModelsPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { SettingsPage } from "./pages/SettingsPage";
-import { VaultGate } from "./pages/VaultGate";
+import { StartupGate } from "./pages/StartupGate";
 import { MiniApp } from "./MiniApp";
 import {
   listCredentialsWithContext,
@@ -63,27 +63,6 @@ const PAGE_TITLES: Record<PageKey, string> = {
   import: "텍스트 가져오기",
 };
 
-function VaultLockButton({ onLocked }: { onLocked: () => void }) {
-  const { notify } = useToast();
-  const [busy, setBusy] = useState(false);
-  const lock = async () => {
-    setBusy(true);
-    try {
-      await vaultLock();
-      onLocked();
-    } catch (error) {
-      notify(errorMessage(error), "error");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <button type="button" className="button button-small" disabled={busy} onClick={() => void lock()}>
-      {busy ? "잠그는 중…" : "잠그기"}
-    </button>
-  );
-}
-
 export default function App() {
   const isMini = new URLSearchParams(window.location.search).get("window") === "mini";
   if (isMini) {
@@ -103,6 +82,7 @@ function MainApp() {
   const [route, setRoute] = useState<Route>({ page: "dashboard", nonce: 0 });
   const [searchOpen, setSearchOpen] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [entered, setEntered] = useState(false);
   const alertedRef = useRef<Set<string>>(new Set());
   const miniOpenedRef = useRef(false);
   const usageRefreshedRef = useRef(false);
@@ -152,6 +132,14 @@ function MainApp() {
     }
   }, []);
 
+  // 백그라운드 자동 잠금해제가 끝나면 게이트 상태를 갱신한다(초기화 동안만 폴링).
+  const autoUnlockState = vault?.autoUnlock;
+  useEffect(() => {
+    if (autoUnlockState !== "initializing") return;
+    const timer = window.setInterval(() => void refreshVault(), 700);
+    return () => window.clearInterval(timer);
+  }, [autoUnlockState, refreshVault]);
+
   useEffect(() => {
     let active = true;
     vaultStatus()
@@ -193,20 +181,24 @@ function MainApp() {
   useEffect(() => {
     if (vault?.state !== "unlocked" || settings.autoLockMinutes <= 0) return;
     const timeoutMs = settings.autoLockMinutes * 60_000;
-    let timer = window.setTimeout(() => {
+    let timer: number | undefined;
+    const lockNow = () => {
       void vaultLock().then(() => refreshVault());
-    }, timeoutMs);
-    const reset = () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        void vaultLock().then(() => refreshVault());
-      }, timeoutMs);
     };
+    const arm = () => {
+      // 상주(숨김) 상태에서 잠기면 백그라운드 모니터가 멈추므로, 창이 보일 때만 예약한다.
+      if (document.visibilityState !== "visible") return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(lockNow, timeoutMs);
+    };
+    arm();
     const events: Array<keyof WindowEventMap> = ["mousemove", "mousedown", "keydown", "wheel"];
-    events.forEach((event) => window.addEventListener(event, reset));
+    events.forEach((event) => window.addEventListener(event, arm));
+    document.addEventListener("visibilitychange", arm);
     return () => {
       window.clearTimeout(timer);
-      events.forEach((event) => window.removeEventListener(event, reset));
+      events.forEach((event) => window.removeEventListener(event, arm));
+      document.removeEventListener("visibilitychange", arm);
     };
   }, [vault?.state, settings.autoLockMinutes, refreshVault]);
 
@@ -427,11 +419,17 @@ function MainApp() {
   }
 
   if (!vault) {
-    return <div className="gate splash">Vault 확인 중…</div>;
+    return <div className="gate splash">API Desk 준비 중…</div>;
   }
 
-  if (vault.state !== "unlocked") {
-    return <VaultGate status={vault} onUnlocked={() => void refreshVault()} />;
+  if (!entered || vault.state !== "unlocked") {
+    return (
+      <StartupGate
+        status={vault}
+        onEnter={() => setEntered(true)}
+        onUnlocked={() => void refreshVault()}
+      />
+    );
   }
 
   return (
@@ -440,7 +438,6 @@ function MainApp() {
         <Sidebar
           page={route.page}
           onNavigate={(page) => navigate(page)}
-          onLockVault={() => void refreshVault()}
           locked={false}
         />
         <div className="main">
@@ -469,11 +466,13 @@ function MainApp() {
               >
                 미니 창
               </button>
-              <span className="vault-status" title="Vault가 열려 있어 키를 읽고 저장할 수 있습니다">
+              <span
+                className="vault-status"
+                title="자동 잠금해제(DPAPI)로 보호됩니다. 세션 잠금은 설정에서 가능합니다."
+              >
                 <span className="vault-dot" />
                 Vault 열림
               </span>
-              <VaultLockButton onLocked={() => void refreshVault()} />
             </div>
           </header>
           <main className="content">{renderPage()}</main>
