@@ -87,6 +87,7 @@ export function monitorRemainingPercent(
     return null;
   }
   if (monitor === "opencode") {
+    if (details.limitReached === true) return 0;
     const effective = number(details.effectiveRemainingPercent);
     if (effective !== null) return effective;
     const windowRemaining = (entry: unknown): number | null => {

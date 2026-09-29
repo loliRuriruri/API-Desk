@@ -133,7 +133,7 @@ describe("percent helpers", () => {
         }),
       ),
     ).toBe(0);
-    // CASE D: rolling 0 (rem 100), weekly 6 (rem 94), monthly null
+    // CASE D (unlimited): rolling 0 (rem 100), weekly 6 (rem 94), monthly null
     expect(
       monitorRemainingPercent(
         "opencode",
@@ -144,6 +144,22 @@ describe("percent helpers", () => {
         }),
       ),
     ).toBe(94);
+    // CASE D (limit reached): monthly 50 (rem 50), weekly 100 (rem 0, limit reached) -> 0
+    expect(
+      monitorRemainingPercent(
+        "opencode",
+        JSON.stringify({
+          rolling: { percent: 10 },
+          weekly: { percent: 100 },
+          monthly: { percent: 50 },
+          primaryWindow: "monthly",
+          primaryRemainingPercent: 50,
+          effectiveRemainingPercent: 0,
+          limitingWindow: "weekly",
+          limitReached: true,
+        }),
+      ),
+    ).toBe(0);
     // CASE E: all null
     expect(
       monitorRemainingPercent(

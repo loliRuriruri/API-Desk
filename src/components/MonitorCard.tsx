@@ -94,6 +94,16 @@ export function MonitorCard({
   };
 
   const remaining = monitorRemainingPercent(monitor, snapshot?.details_json ?? null);
+  const opencodePrimary =
+    monitor === "opencode"
+      ? (typeof details?.primaryRemainingPercent === "number"
+          ? (details.primaryRemainingPercent as number)
+          : null)
+      : null;
+  const isLimitReached =
+    monitor === "opencode" && details?.limitReached === true;
+  const displayRemaining = opencodePrimary ?? remaining;
+
   const gauges = gaugesForMonitor(monitor, snapshot?.details_json ?? null, cap);
   const models = monitorModels(snapshot?.details_json ?? null);
   const hasAccountTabs =
@@ -101,7 +111,15 @@ export function MonitorCard({
     (accounts.length > 0 || antigravityAccountSnapshots(allSnapshots).size > 0);
 
   const tone: "ok" | "warn" | "danger" | "muted" =
-    remaining === null ? "muted" : remaining >= 60 ? "ok" : remaining >= 30 ? "warn" : "danger";
+    isLimitReached
+      ? "danger"
+      : displayRemaining === null
+        ? "muted"
+        : displayRemaining >= 60
+          ? "ok"
+          : displayRemaining >= 30
+            ? "warn"
+            : "danger";
   const snapshotStatusLabel = snapshot
     ? snapshot.status === "ok"
       ? "정상"
@@ -117,7 +135,11 @@ export function MonitorCard({
       <div className="monitor-head">
         <div className="monitor-title">
           <strong>{label}</strong>
-          {remaining !== null ? <Badge tone={tone}>{Math.round(remaining)}%</Badge> : null}
+          {displayRemaining !== null ? (
+            <Badge tone={tone}>
+              {Math.round(displayRemaining)}%{isLimitReached ? " LIMIT" : ""}
+            </Badge>
+          ) : null}
           {showStatusBadge ? (
             <Badge tone={available ? "muted" : "warn"}>{statusLabel}</Badge>
           ) : null}
