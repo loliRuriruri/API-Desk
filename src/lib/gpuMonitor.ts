@@ -279,6 +279,7 @@ export interface ResidentStatus {
   log: string[];
   gpu: GpuRuntimeStatus;
   turzx: {
+    state?: string;
     connected?: boolean;
     port?: string | null;
     model?: string | null;

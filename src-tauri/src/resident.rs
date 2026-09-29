@@ -88,6 +88,13 @@ pub fn log(app: &AppHandle, tag: &str, message: &str) {
     let _ = app.emit("resident-log", line);
 }
 
+/// 백엔드 세션 시작 경계 로그(스펙 §13: session start pid=... build=...).
+pub fn log_session_start(app: &AppHandle) {
+    let pid = std::process::id();
+    let build = env!("CARGO_PKG_VERSION");
+    log(app, "resident", &format!("session start pid={pid} build={build}"));
+}
+
 // ---------------------------------------------------------------- 사용량 스케줄러
 
 /// Vault 자동 해제를 기다린 뒤 6시간 초과 사용량 스냅샷을 주기적으로 갱신한다.

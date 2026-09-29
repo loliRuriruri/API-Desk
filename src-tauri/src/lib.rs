@@ -247,6 +247,7 @@ pub fn run() {
             }
             // 상주 런타임: 창/프런트엔드와 무관하게 백엔드가 수집기를 소유·가동한다.
             {
+                resident::log_session_start(app.handle());
                 resident::log(app.handle(), "resident", "starting");
                 gpu_monitor::start_sampler(app.handle());
                 resident::start_usage_scheduler(app.handle());

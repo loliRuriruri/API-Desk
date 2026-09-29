@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Modal } from "../components/Modal";
 import { TurzxSettingsSection } from "../components/TurzxSettingsSection";
@@ -523,10 +523,10 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
               <td className="mono">
                 {resident?.turzx
                   ? resident.turzx.connected
-                    ? `${resident.turzx.port ?? "-"} · Connected (${resident.turzx.model ?? "?"})`
+                    ? `${resident.turzx.port ?? "-"} · ${resident.turzx.state ?? "Connected"} (${resident.turzx.model ?? "?"})`
                     : resident.turzx.enabled === false
                       ? "비활성"
-                      : `연결 안 됨${resident.turzx.lastError ? ` · ${resident.turzx.lastError}` : ""}`
+                      : `연결 대기 중${resident.turzx.lastError ? ` · ${resident.turzx.lastError}` : ""}`
                   : "확인 중…"}
               </td>
             </tr>

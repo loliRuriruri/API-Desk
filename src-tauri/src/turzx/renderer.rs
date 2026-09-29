@@ -788,7 +788,7 @@ fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
     draw_card(canvas, x, y_pos, w, card_h);
 
     let name = if gpu.name.is_empty() {
-        "GPU 없음".to_string()
+        "GPU ...".to_string()
     } else {
         gpu.name.replace("NVIDIA GeForce ", "")
     };
@@ -811,16 +811,20 @@ fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
     let utilization = gpu.utilization_percent.map(|value| value as f64);
     let util_text = utilization
         .map(|value| format!("{}%", value.round() as i64))
-        .unwrap_or_else(|| "N/A".into());
+        .unwrap_or_else(|| "...".into());
     draw_value_gauge(canvas, inner_x, inner_w, "GPU", utilization, COLOR_ACCENT, &util_text, row_y);
     row_y += API_GAUGE_ROW_HEIGHT;
 
     let percent = vram_percent(gpu);
-    let vram_text = format!(
-        "{} / {} GB",
-        format_gib(gpu.vram_used_bytes),
-        format_gib(gpu.vram_total_bytes)
-    );
+    let vram_text = if gpu.vram_used_bytes.is_none() && gpu.vram_total_bytes.is_none() {
+        "...".to_string()
+    } else {
+        format!(
+            "{} / {} GB",
+            format_gib(gpu.vram_used_bytes),
+            format_gib(gpu.vram_total_bytes)
+        )
+    };
     draw_value_gauge(canvas, inner_x, inner_w, "VRAM", percent, vram_gauge_color(percent), &vram_text, row_y);
     row_y += API_GAUGE_ROW_HEIGHT;
 

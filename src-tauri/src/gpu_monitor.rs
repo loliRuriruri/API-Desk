@@ -985,16 +985,41 @@ pub(crate) fn resolve_process(
 // ---------------------------------------------------------------- ollama / laya health
 
 fn ollama_models() -> Vec<String> {
-    let Some(output) = Command::new("ollama")
+    let mut child = match Command::new("ollama")
         .args(["ps"])
         .creation_flags_hidden()
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
-    else {
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let start = Instant::now();
+    let timeout = Duration::from_millis(800);
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+            Err(_) => break false,
+        }
+    };
+    if !success {
+        return Vec::new();
+    }
+    let Some(mut stdout) = child.stdout.take() else {
         return Vec::new();
     };
+    let mut output = String::new();
+    if std::io::Read::read_to_string(&mut stdout, &mut output).is_err() {
+        return Vec::new();
+    }
     output
         .lines()
         .skip(1)
@@ -1307,7 +1332,15 @@ pub(crate) fn cached_snapshot(app: &AppHandle, ttl_ms: u64) -> GpuSnapshot {
     let snapshot = refresh_snapshot(app);
     let mut cache = state.cache.lock().unwrap();
     *cache = Some((snapshot.clone(), Instant::now()));
+    state.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     snapshot
+}
+
+/// 캐시된 스냅샷이 있으면 즉시 반환하고, 없으면 None을 반환한다(블로킹 수집 금지).
+pub(crate) fn try_cached_snapshot(app: &AppHandle) -> Option<GpuSnapshot> {
+    let state = app.try_state::<GpuMonitorState>()?;
+    let cache = state.cache.lock().ok()?;
+    cache.as_ref().map(|(snapshot, _)| snapshot.clone())
 }
 
 fn refresh_snapshot(app: &AppHandle) -> GpuSnapshot {
@@ -1369,6 +1402,7 @@ pub struct GpuMonitorState {
     health: Mutex<Option<(Vec<String>, Instant)>>,
     runtime: Mutex<GpuRuntimeStatus>,
     sampler_running: std::sync::atomic::AtomicBool,
+    generation: std::sync::atomic::AtomicU64,
 }
 
 impl Default for GpuMonitorState {
@@ -1383,6 +1417,7 @@ impl Default for GpuMonitorState {
                 ..Default::default()
             }),
             sampler_running: std::sync::atomic::AtomicBool::new(false),
+            generation: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -1408,6 +1443,12 @@ pub fn runtime_status(app: &AppHandle) -> GpuRuntimeStatus {
     app.try_state::<GpuMonitorState>()
         .and_then(|state| state.runtime.lock().ok().map(|status| status.clone()))
         .unwrap_or_default()
+}
+
+pub fn snapshot_generation(app: &AppHandle) -> u64 {
+    app.try_state::<GpuMonitorState>()
+        .map(|state| state.generation.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 /// 백엔드 시작 시 GPU 샘플러를 소유/가동한다(창·프런트엔드 불필요).
@@ -1455,6 +1496,8 @@ fn sampler_loop(app: AppHandle) {
                 status.samples = status.samples.saturating_add(1);
             });
             if first_pass {
+                let gen = snapshot_generation(&app);
+                crate::resident::log(&app, "gpu", &format!("first snapshot generation={gen}"));
                 crate::resident::log(
                     &app,
                     "gpu",

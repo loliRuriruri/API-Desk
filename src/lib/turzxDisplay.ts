@@ -26,6 +26,7 @@ export interface TurzxPortCandidate {
 }
 
 export interface TurzxStatus {
+  state?: string;
   enabled: boolean;
   connected: boolean;
   port: string | null;
