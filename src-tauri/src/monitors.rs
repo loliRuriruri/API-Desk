@@ -31,7 +31,7 @@ pub struct MonitorProbe {
     pub detail: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorOutcome {
     pub monitor: String,
@@ -50,6 +50,20 @@ pub struct AntigravityAccount {
     pub tier: Option<String>,
     pub saved_at: String,
     pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AntigravitySwitchResult {
+    pub requested_account_id: String,
+    pub requested_email: Option<String>,
+    pub credential_written: bool,
+    pub live_email_before: Option<String>,
+    pub live_email_after: Option<String>,
+    pub state: String,
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MonitorOutcome>,
 }
 
 fn home_dir() -> Result<PathBuf, AppError> {
@@ -813,30 +827,46 @@ fn parse_antigravity_endpoints(content: &str) -> Vec<(String, u16, String)> {
         .collect()
 }
 
-fn find_antigravity_endpoint() -> Option<(String, u16, String)> {
-    antigravity_endpoint_candidates().into_iter().next()
+#[derive(Default, Debug, Clone)]
+pub struct LiveProcessEndpoint {
+    pub token: Option<String>,
+    pub ports: Vec<u16>,
 }
 
-fn antigravity_process_csrf() -> Option<String> {
+pub fn antigravity_process_endpoints() -> LiveProcessEndpoint {
     let script = r#"
 $ProgressPreference = 'SilentlyContinue'
 $p = Get-CimInstance Win32_Process -Filter "Name='language_server.exe'" | Select-Object -First 1
-if ($p -and $p.CommandLine) {
-  $i = $p.CommandLine.IndexOf('--csrf_token')
-  if ($i -ge 0) {
-    $rest = $p.CommandLine.Substring($i + 12).TrimStart()
-    ($rest -split '\s+')[0]
+if ($p) {
+  $token = ''
+  if ($p.CommandLine) {
+    $i = $p.CommandLine.IndexOf('--csrf_token')
+    if ($i -ge 0) {
+      $rest = $p.CommandLine.Substring($i + 12).TrimStart()
+      $token = ($rest -split '\s+')[0]
+    }
   }
+  $ports = (Get-NetTCPConnection -OwningProcess $p.ProcessId -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalAddress -eq '127.0.0.1' }).LocalPort
+  "$token|$($ports -join ',')"
 }
 "#;
-    let output = run_powershell(script).ok()?;
-    let token = output.trim().to_string();
-    if token.is_empty() {
-        None
-    } else {
-        Some(token)
+    let mut result = LiveProcessEndpoint::default();
+    if let Ok(output) = run_powershell(script) {
+        let parts: Vec<&str> = output.splitn(2, '|').collect();
+        if !parts.is_empty() && !parts[0].trim().is_empty() {
+            result.token = Some(parts[0].trim().to_string());
+        }
+        if parts.len() > 1 {
+            for port_str in parts[1].split(',') {
+                if let Ok(port) = port_str.trim().parse::<u16>() {
+                    result.ports.push(port);
+                }
+            }
+        }
     }
+    result
 }
+
 
 fn tcp_alive(port: u16) -> bool {
     use std::net::{Ipv4Addr, SocketAddr, TcpStream};
@@ -845,10 +875,67 @@ fn tcp_alive(port: u16) -> bool {
 }
 
 fn antigravity_endpoint_live() -> bool {
+    let proc_ports = antigravity_process_endpoints().ports;
+    if proc_ports.into_iter().any(tcp_alive) {
+        return true;
+    }
     antigravity_endpoint_candidates()
         .into_iter()
         .take(4)
         .any(|(_, port, _)| tcp_alive(port))
+}
+
+pub async fn find_live_antigravity_session(
+    client: &reqwest::Client,
+) -> Option<(u16, String, Value)> {
+    let proc_info = tauri::async_runtime::spawn_blocking(antigravity_process_endpoints)
+        .await
+        .unwrap_or_default();
+
+    let log_candidates = antigravity_endpoint_candidates();
+
+    let mut candidate_ports = proc_info.ports;
+    for (_, port, _) in &log_candidates {
+        if !candidate_ports.contains(port) {
+            candidate_ports.push(*port);
+        }
+    }
+
+    let (alive, _): (Vec<u16>, Vec<u16>) = candidate_ports
+        .into_iter()
+        .partition(|port| tcp_alive(*port));
+
+    for port in alive.into_iter().take(6) {
+        let mut tokens: Vec<String> = Vec::new();
+        if let Some(token) = &proc_info.token {
+            tokens.push(token.clone());
+        }
+        if let Some((_, _, token)) = log_candidates.iter().find(|(_, known, _)| *known == port) {
+            if !tokens.contains(token) {
+                tokens.push(token.clone());
+            }
+        }
+        for token in tokens {
+            if let Ok(status) =
+                antigravity_rpc(client, "https://127.0.0.1", port, &token, ANTIGRAVITY_STATUS_RPC)
+                    .await
+            {
+                return Some((port, token, status));
+            }
+        }
+    }
+    None
+}
+
+pub async fn get_live_antigravity_email() -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(LOCAL_TIMEOUT_MS))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .ok()?;
+    let (_, _, status) = find_live_antigravity_session(&client).await?;
+    let (email, _) = antigravity_status_email_tier(&status);
+    email
 }
 
 fn opencode_candidate_dirs() -> Vec<PathBuf> {
@@ -1802,58 +1889,13 @@ fn remember_antigravity_account(status: &Value) -> Vec<AntigravityAccount> {
 }
 
 async fn refresh_antigravity() -> Result<MonitorOutcome, AppError> {
-    let log_candidates = antigravity_endpoint_candidates();
-    if log_candidates.is_empty() {
-        return Err(AppError::Network(
-            "Antigravity 로그에서 로컬 API 주소를 찾을 수 없습니다 · Antigravity를 실행한 뒤 다시 조회하세요"
-                .into(),
-        ));
-    }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(LOCAL_TIMEOUT_MS))
         .danger_accept_invalid_certs(true)
         .build()
         .map_err(|e| AppError::Network(e.to_string()))?;
 
-    // The running language server rotates its csrf token on every restart and the
-    // token is not always written to main.log, so read it from the process itself.
-    let process_csrf = tauri::async_runtime::spawn_blocking(antigravity_process_csrf)
-        .await
-        .ok()
-        .flatten();
-
-    let ports: Vec<u16> = log_candidates
-        .iter()
-        .map(|(_, port, _)| *port)
-        .collect();
-    let (alive, rest): (Vec<u16>, Vec<u16>) = ports.into_iter().partition(|port| tcp_alive(*port));
-    let ordered: Vec<u16> = alive.into_iter().chain(rest).take(4).collect();
-
-    let mut endpoint: Option<(u16, String, Value)> = None;
-    'outer: for port in ordered {
-        let mut tokens: Vec<String> = Vec::new();
-        if let Some(token) = process_csrf.as_ref() {
-            tokens.push(token.clone());
-        }
-        if let Some((_, _, token)) = log_candidates.iter().find(|(_, known, _)| *known == port) {
-            if !tokens.contains(token) {
-                tokens.push(token.clone());
-            }
-        }
-        for token in tokens {
-            match antigravity_rpc(&client, "https://127.0.0.1", port, &token, ANTIGRAVITY_STATUS_RPC)
-                .await
-            {
-                Ok(status) => {
-                    endpoint = Some((port, token, status));
-                    break 'outer;
-                }
-                Err(_) => continue,
-            }
-        }
-    }
-
-    let Some((port, csrf, status)) = endpoint else {
+    let Some((port, csrf, status)) = find_live_antigravity_session(&client).await else {
         return Err(AppError::Network(
             "Antigravity가 실행 중이 아니거나 로컬 API가 응답하지 않습니다 · Antigravity를 실행한 뒤 다시 조회하세요"
                 .into(),
@@ -1896,25 +1938,16 @@ pub async fn monitor_antigravity_save_current(
     let credential = read_antigravity_credential()?;
     let mut email = None;
     let mut tier = None;
-    if let Some((base, port, csrf)) = find_antigravity_endpoint() {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(LOCAL_TIMEOUT_MS))
-            .danger_accept_invalid_certs(true)
-            .build()
-            .map_err(|e| AppError::Network(e.to_string()))?;
-        if let Ok(status) = antigravity_rpc(&client, &base, port, &csrf, ANTIGRAVITY_STATUS_RPC).await
-        {
-            email = status
-                .get("userStatus")
-                .and_then(|value| value.get("email"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            tier = status
-                .get("userStatus")
-                .and_then(|value| value.get("userTier"))
-                .and_then(|value| value.get("name"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
+
+    if let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_millis(LOCAL_TIMEOUT_MS))
+        .danger_accept_invalid_certs(true)
+        .build()
+    {
+        if let Some((_, _, status)) = find_live_antigravity_session(&client).await {
+            let (live_email, live_tier) = antigravity_status_email_tier(&status);
+            email = live_email;
+            tier = live_tier;
         }
     }
 
@@ -1946,19 +1979,196 @@ pub async fn monitor_antigravity_save_current(
 }
 
 #[tauri::command]
-pub fn monitor_antigravity_switch_account(id: String) -> Result<(), AppError> {
+pub async fn monitor_antigravity_switch_account(
+    id: String,
+) -> Result<AntigravitySwitchResult, AppError> {
     let dir = antigravity_accounts_dir()
         .ok_or_else(|| AppError::Io("계정 폴더를 만들 수 없습니다".into()))?;
+    let accounts = load_antigravity_accounts();
+    let requested = accounts
+        .iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| AppError::InvalidRequest("저장된 계정을 찾을 수 없습니다".into()))?;
+
+    let requested_email = requested.email.clone().or_else(|| Some(requested.label.clone()));
+    let live_email_before = get_live_antigravity_email().await;
+
     let credential = std::fs::read_to_string(dir.join(&id).join("credential.json"))
-        .map_err(|_| AppError::Io("저장된 계정 정보를 찾을 수 없습니다".into()))?;
+        .map_err(|_| AppError::Io("저장된 계정 자격 증명 파일을 찾을 수 없습니다".into()))?;
     run_powershell(&cred_write_script(&credential))?;
 
-    let mut accounts = load_antigravity_accounts();
-    for account in accounts.iter_mut() {
-        account.is_active = account.id == id;
+    let live_email_after = get_live_antigravity_email().await;
+
+    let (state, message, outcome) = if let (Some(req_mail), Some(live_mail)) = (&requested_email, &live_email_after) {
+        if req_mail.eq_ignore_ascii_case(live_mail) {
+            let mut updated = accounts;
+            for acc in updated.iter_mut() {
+                acc.is_active = acc.id == id;
+            }
+            let _ = save_antigravity_accounts(&updated);
+            let outcome = refresh_antigravity().await.ok();
+            (
+                "confirmed".to_string(),
+                Some("Antigravity 세션이 전환되었습니다.".into()),
+                outcome,
+            )
+        } else {
+            (
+                "restart_required".to_string(),
+                Some("자격 증명을 변경했습니다. Antigravity 재시작이 필요합니다.".into()),
+                None,
+            )
+        }
+    } else {
+        (
+            "restart_required".to_string(),
+            Some("자격 증명을 변경했습니다. Antigravity를 실행한 뒤 확인하세요.".into()),
+            None,
+        )
+    };
+
+    Ok(AntigravitySwitchResult {
+        requested_account_id: id,
+        requested_email,
+        credential_written: true,
+        live_email_before,
+        live_email_after,
+        state,
+        message,
+        outcome,
+    })
+}
+
+#[tauri::command]
+pub async fn monitor_antigravity_confirm_switch(
+    id: String,
+) -> Result<AntigravitySwitchResult, AppError> {
+    let accounts = load_antigravity_accounts();
+    let requested = accounts
+        .iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| AppError::InvalidRequest("저장된 계정을 찾을 수 없습니다".into()))?;
+
+    let requested_email = requested.email.clone().or_else(|| Some(requested.label.clone()));
+    let live_email = get_live_antigravity_email().await;
+
+    let (state, message, outcome) = if let (Some(req_mail), Some(live_mail)) = (&requested_email, &live_email) {
+        if req_mail.eq_ignore_ascii_case(live_mail) {
+            let mut updated = accounts;
+            for acc in updated.iter_mut() {
+                acc.is_active = acc.id == id;
+            }
+            let _ = save_antigravity_accounts(&updated);
+            let outcome = refresh_antigravity().await.ok();
+            (
+                "confirmed".to_string(),
+                Some("Antigravity 계정 전환이 확인되었습니다.".into()),
+                outcome,
+            )
+        } else {
+            let was_previous = accounts.iter().any(|acc| {
+                acc.id != id && acc.email.as_deref().map_or(false, |m| m.eq_ignore_ascii_case(live_mail))
+            });
+            if was_previous {
+                (
+                    "restart_required".to_string(),
+                    Some("Antigravity가 아직 이전 세션으로 실행 중입니다. Antigravity를 재시작하세요.".into()),
+                    None,
+                )
+            } else {
+                (
+                    "mismatch".to_string(),
+                    Some(format!("예상 계정({req_mail})과 실제 로그인 계정({live_mail})이 다릅니다.")),
+                    None,
+                )
+            }
+        }
+    } else {
+        (
+            "restart_required".to_string(),
+            Some("Antigravity가 실행 중이 아닙니다. Antigravity를 실행하세요.".into()),
+            None,
+        )
+    };
+
+    Ok(AntigravitySwitchResult {
+        requested_account_id: id,
+        requested_email,
+        credential_written: true,
+        live_email_before: None,
+        live_email_after: live_email,
+        state,
+        message,
+        outcome,
+    })
+}
+
+#[tauri::command]
+pub async fn monitor_antigravity_poll_switch(
+    id: String,
+    timeout_secs: Option<u64>,
+) -> Result<AntigravitySwitchResult, AppError> {
+    let limit = timeout_secs.unwrap_or(15).clamp(2, 30);
+    let accounts = load_antigravity_accounts();
+    let requested = accounts
+        .iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| AppError::InvalidRequest("저장된 계정을 찾을 수 없습니다".into()))?;
+    let requested_email = requested.email.clone().or_else(|| Some(requested.label.clone()));
+
+    let mut last_live_email = None;
+    for _ in 0..limit {
+        let live_email = get_live_antigravity_email().await;
+        last_live_email = live_email.clone();
+        if let (Some(req_mail), Some(live_mail)) = (&requested_email, &live_email) {
+            if req_mail.eq_ignore_ascii_case(live_mail) {
+                let mut updated = load_antigravity_accounts();
+                for acc in updated.iter_mut() {
+                    acc.is_active = acc.id == id;
+                }
+                let _ = save_antigravity_accounts(&updated);
+                let outcome = refresh_antigravity().await.ok();
+                return Ok(AntigravitySwitchResult {
+                    requested_account_id: id,
+                    requested_email,
+                    credential_written: true,
+                    live_email_before: None,
+                    live_email_after: Some(live_mail.clone()),
+                    state: "confirmed".into(),
+                    message: Some("Antigravity 계정 전환이 확인되었습니다.".into()),
+                    outcome,
+                });
+            } else {
+                let was_known_other = accounts.iter().any(|acc| {
+                    acc.id != id && acc.email.as_deref().map_or(false, |m| m.eq_ignore_ascii_case(live_mail))
+                });
+                if !was_known_other {
+                    return Ok(AntigravitySwitchResult {
+                        requested_account_id: id,
+                        requested_email: requested_email.clone(),
+                        credential_written: true,
+                        live_email_before: None,
+                        live_email_after: Some(live_mail.clone()),
+                        state: "mismatch".into(),
+                        message: Some(format!("예상 계정({})과 실제 로그인 계정({})이 다릅니다.", req_mail, live_mail)),
+                        outcome: None,
+                    });
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    save_antigravity_accounts(&accounts)?;
-    Ok(())
+
+    Ok(AntigravitySwitchResult {
+        requested_account_id: id,
+        requested_email,
+        credential_written: true,
+        live_email_before: None,
+        live_email_after: last_live_email,
+        state: "timeout".into(),
+        message: Some("Antigravity 세션 전환 대기 시간이 초과되었습니다.".into()),
+        outcome: None,
+    })
 }
 
 #[tauri::command]
@@ -1997,6 +2207,27 @@ Spawning: language_server.exe --csrf_token BBB-222
         assert_eq!(candidates[0].2, "BBB-222");
         assert_eq!(candidates[1].1, 9001);
         assert_eq!(candidates[1].2, "AAA-111");
+    }
+
+    #[test]
+    fn rotates_antigravity_port_and_csrf_newest_first() {
+        let log = "\
+[info] Host bridge server listening on http://127.0.0.1:4000
+Spawning: language_server.exe --csrf_token OLD-CSRF-123
+[info] [Auto-Restart] Port changed! Reloading all windows with URL: https://127.0.0.1:4727/
+[info]   Local:       https://127.0.0.1:4727/
+Spawning: language_server.exe --csrf_token NEW-CSRF-456
+[info] [Auto-Restart] Port changed! Reloading all windows with URL: https://127.0.0.1:5899/
+[info]   Local:       https://127.0.0.1:5899/
+";
+        let candidates = parse_antigravity_endpoints(log);
+        assert!(!candidates.is_empty());
+        // New endpoint discovered as top priority
+        assert_eq!(candidates[0].1, 5899);
+        assert_eq!(candidates[0].2, "NEW-CSRF-456");
+        // Old endpoint is relegated / not preferred
+        assert_eq!(candidates[1].1, 4727);
+        assert_eq!(candidates[1].2, "OLD-CSRF-123");
     }
 
     #[test]
@@ -2367,5 +2598,40 @@ Spawning: language_server.exe --csrf_token BBB-222
             Err(error) => panic!("opencode DB 쿼리 실패: {error}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn serializes_antigravity_switch_result_camel_case() {
+        let result = AntigravitySwitchResult {
+            requested_account_id: "acc-1".into(),
+            requested_email: Some("b@example.com".into()),
+            credential_written: true,
+            live_email_before: Some("a@example.com".into()),
+            live_email_after: Some("a@example.com".into()),
+            state: "restart_required".into(),
+            message: Some("Antigravity 재시작이 필요합니다".into()),
+            outcome: None,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["requestedAccountId"], "acc-1");
+        assert_eq!(json["requestedEmail"], "b@example.com");
+        assert_eq!(json["credentialWritten"], true);
+        assert_eq!(json["liveEmailBefore"], "a@example.com");
+        assert_eq!(json["liveEmailAfter"], "a@example.com");
+        assert_eq!(json["state"], "restart_required");
+        assert_eq!(json["message"], "Antigravity 재시작이 필요합니다");
+    }
+
+    #[test]
+    fn remembers_antigravity_account_only_for_confirmed_email() {
+        let status = json!({
+            "userStatus": {
+                "email": "confirmed@example.com",
+                "userTier": { "name": "Google AI Pro" }
+            }
+        });
+        let (email, tier) = antigravity_status_email_tier(&status);
+        assert_eq!(email.as_deref(), Some("confirmed@example.com"));
+        assert_eq!(tier.as_deref(), Some("Google AI Pro"));
     }
 }

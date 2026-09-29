@@ -26,6 +26,7 @@ interface MonitorCardProps {
   compact?: boolean;
   accountBusy?: boolean;
   onSwitchAccount?: (account: AntigravityAccount) => void;
+  onConfirmSwitch?: (account: AntigravityAccount) => void;
   onDeleteAccount?: (account: AntigravityAccount) => void;
 }
 
@@ -44,6 +45,7 @@ export function MonitorCard({
   compact = false,
   accountBusy = false,
   onSwitchAccount,
+  onConfirmSwitch,
   onDeleteAccount,
 }: MonitorCardProps) {
   const [modelsOpen, setModelsOpen] = useState(false);
@@ -205,6 +207,7 @@ export function MonitorCard({
           current={snapshot}
           busy={accountBusy || busy}
           onSwitchAccount={onSwitchAccount}
+          onConfirmSwitch={onConfirmSwitch}
           onDeleteAccount={onDeleteAccount}
           onRefreshCurrent={onRefresh}
         />

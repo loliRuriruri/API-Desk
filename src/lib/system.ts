@@ -175,6 +175,17 @@ export interface AntigravityAccount {
   isActive: boolean;
 }
 
+export interface AntigravitySwitchResult {
+  requestedAccountId: string;
+  requestedEmail?: string | null;
+  credentialWritten: boolean;
+  liveEmailBefore?: string | null;
+  liveEmailAfter?: string | null;
+  state: "credential_updated" | "confirmed" | "restart_required" | "timeout" | "mismatch";
+  message?: string | null;
+  outcome?: MonitorOutcome | null;
+}
+
 export async function antigravityAccounts(): Promise<AntigravityAccount[]> {
   return invoke<AntigravityAccount[]>("monitor_antigravity_accounts");
 }
@@ -183,8 +194,19 @@ export async function antigravitySaveCurrent(label: string): Promise<Antigravity
   return invoke<AntigravityAccount>("monitor_antigravity_save_current", { label });
 }
 
-export async function antigravitySwitchAccount(id: string): Promise<void> {
-  await invoke("monitor_antigravity_switch_account", { id });
+export async function antigravitySwitchAccount(id: string): Promise<AntigravitySwitchResult> {
+  return invoke<AntigravitySwitchResult>("monitor_antigravity_switch_account", { id });
+}
+
+export async function antigravityConfirmSwitch(id: string): Promise<AntigravitySwitchResult> {
+  return invoke<AntigravitySwitchResult>("monitor_antigravity_confirm_switch", { id });
+}
+
+export async function antigravityPollSwitch(
+  id: string,
+  timeoutSecs?: number,
+): Promise<AntigravitySwitchResult> {
+  return invoke<AntigravitySwitchResult>("monitor_antigravity_poll_switch", { id, timeoutSecs });
 }
 
 export async function antigravityDeleteAccount(id: string): Promise<void> {

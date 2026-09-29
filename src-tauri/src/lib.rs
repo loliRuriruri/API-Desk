@@ -346,6 +346,8 @@ pub fn run() {
             monitors::monitor_antigravity_accounts,
             monitors::monitor_antigravity_save_current,
             monitors::monitor_antigravity_switch_account,
+            monitors::monitor_antigravity_confirm_switch,
+            monitors::monitor_antigravity_poll_switch,
             monitors::monitor_antigravity_delete_account,
             laya_env::laya_env_status,
             laya_env::laya_env_check_updates,

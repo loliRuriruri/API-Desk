@@ -18,12 +18,16 @@ import {
   antigravityAccounts,
   antigravityDeleteAccount,
   antigravitySaveCurrent,
-  antigravitySwitchAccount,
   monitorProbe,
   monitorRefresh,
   type AntigravityAccount,
 } from "../lib/system";
-import { persistMonitorOutcome } from "../lib/monitorStore";
+import {
+  persistMonitorOutcome,
+  runAntigravitySwitch,
+  runAntigravityConfirm,
+  getPendingAgSwitch,
+} from "../lib/monitorStore";
 import { MonitorCard } from "../components/MonitorCard";
 import mikuHero from "../assets/miku-hero.png";
 
@@ -106,12 +110,30 @@ export function DashboardPage({ onOpenApis }: DashboardPageProps) {
   const switchAccount = async (account: AntigravityAccount) => {
     setAccountsBusy(true);
     try {
-      await antigravitySwitchAccount(account.id);
-      notify(
-        `${account.email ?? account.label} 계정으로 전환했습니다. Antigravity를 재시작한 뒤 [조회]하세요`,
-        "success",
-      );
-      await reloadAccounts();
+      await runAntigravitySwitch(account, {
+        onNotify: (msg, tone) => notify(msg, tone === "warn" ? "info" : tone),
+        onReload: async () => {
+          await reloadAccounts();
+          reload();
+        },
+      });
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setAccountsBusy(false);
+    }
+  };
+
+  const confirmSwitch = async (account: AntigravityAccount) => {
+    setAccountsBusy(true);
+    try {
+      await runAntigravityConfirm(account, {
+        onNotify: (msg, tone) => notify(msg, tone === "warn" ? "info" : tone),
+        onReload: async () => {
+          await reloadAccounts();
+          reload();
+        },
+      });
     } catch (err) {
       notify(errorMessage(err), "error");
     } finally {
@@ -324,6 +346,10 @@ export function DashboardPage({ onOpenApis }: DashboardPageProps) {
               }
               accounts={data.agAccounts}
               allSnapshots={data.monitorSnapshots}
+              accountBusy={accountsBusy}
+              onSwitchAccount={switchAccount}
+              onConfirmSwitch={confirmSwitch}
+              onDeleteAccount={deleteAccount}
             />
           ))}
         </div>
@@ -475,39 +501,92 @@ export function DashboardPage({ onOpenApis }: DashboardPageProps) {
                 </tr>
               </thead>
               <tbody>
-                {accounts.map((account) => (
-                  <tr key={account.id}>
-                    <td>
-                      {account.email ?? account.label}{" "}
-                      {account.isActive ? <Badge tone="ok">현재</Badge> : null}
-                    </td>
-                    <td className="muted">{account.tier ?? "—"}</td>
-                    <td className="muted">{formatDateTime(account.savedAt)}</td>
-                    <td className="row-actions">
-                      <button
-                        type="button"
-                        className="button button-small"
-                        disabled={accountsBusy}
-                        onClick={() => void switchAccount(account)}
-                      >
-                        전환
-                      </button>
-                      <button
-                        type="button"
-                        className="button button-small button-danger-ghost"
-                        onClick={() => void deleteAccount(account)}
-                      >
-                        삭제
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {accounts.map((account) => {
+                  const liveCurrentEmail = (() => {
+                    const snap = snapshotByMonitor.get("antigravity");
+                    if (!snap?.details_json) return null;
+                    try {
+                      return (JSON.parse(snap.details_json) as { email?: string }).email || null;
+                    } catch {
+                      return null;
+                    }
+                  })();
+                  const isLive =
+                    liveCurrentEmail !== null &&
+                    account.email !== null &&
+                    account.email.toLowerCase() === liveCurrentEmail.toLowerCase();
+                  const pending = getPendingAgSwitch();
+                  const isPending =
+                    pending !== null &&
+                    !isLive &&
+                    (pending.accountId === account.id ||
+                      pending.email.toLowerCase() === (account.email ?? "").toLowerCase());
+
+                  return (
+                    <tr key={account.id}>
+                      <td>
+                        {account.email ?? account.label}{" "}
+                        {isLive ? (
+                          <Badge tone="ok">현재</Badge>
+                        ) : isPending ? (
+                          <Badge
+                            tone={
+                              pending.state === "mismatch" || pending.state === "timeout"
+                                ? "danger"
+                                : "warn"
+                            }
+                          >
+                            {pending.state === "restart_required"
+                              ? "재시작 필요"
+                              : pending.state === "mismatch"
+                                ? "계정 불일치"
+                                : pending.state === "timeout"
+                                  ? "시간 초과"
+                                  : "전환 중…"}
+                          </Badge>
+                        ) : null}
+                      </td>
+                      <td className="muted">{account.tier ?? "—"}</td>
+                      <td className="muted">{formatDateTime(account.savedAt)}</td>
+                      <td className="row-actions">
+                        {!isLive ? (
+                          <button
+                            type="button"
+                            className="button button-small"
+                            disabled={accountsBusy}
+                            onClick={() => void switchAccount(account)}
+                          >
+                            {isPending ? "다시 전환" : "전환"}
+                          </button>
+                        ) : null}
+                        {isPending && !isLive ? (
+                          <button
+                            type="button"
+                            className="button button-small button-primary"
+                            disabled={accountsBusy}
+                            onClick={() => void confirmSwitch(account)}
+                          >
+                            재시작 확인
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="button button-small button-danger-ghost"
+                          disabled={accountsBusy}
+                          onClick={() => void deleteAccount(account)}
+                        >
+                          삭제
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
           <p className="form-hint">
             전환은 Windows 자격 증명(“gemini:antigravity”)을 저장된 값으로 바꿉니다. Antigravity를
-            재시작한 뒤 [조회]하면 해당 계정의 주간·5시간 쿼터가 갱신됩니다.
+            재시작하면 새로운 language server가 자동으로 감지되어 쿼터가 즉시 갱신됩니다.
           </p>
         </Modal>
       ) : null}

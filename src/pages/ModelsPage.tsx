@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   createModel,
   deleteModel,
@@ -32,7 +32,6 @@ import {
 import {
   antigravityAccounts,
   antigravityDeleteAccount,
-  antigravitySwitchAccount,
   fetchModels,
   fetchUsage,
   monitorProbe,
@@ -40,6 +39,7 @@ import {
   type AntigravityAccount,
   type ImportedModel,
 } from "../lib/system";
+import { runAntigravitySwitch, runAntigravityConfirm } from "../lib/monitorStore";
 import type { ModelCategory } from "../types/domain";
 
 const CATEGORIES: ModelCategory[] = [
@@ -310,12 +310,24 @@ export function ModelsPage() {
   const switchAgAccount = async (account: AntigravityAccount) => {
     setMonitorBusy("antigravity-account");
     try {
-      await antigravitySwitchAccount(account.id);
-      notify(
-        `${account.email ?? account.label} 계정으로 전환했습니다. Antigravity 재시작 후 ↻로 갱신하세요`,
-        "success",
-      );
-      reload();
+      await runAntigravitySwitch(account, {
+        onNotify: (msg, tone) => notify(msg, tone === "warn" ? "info" : tone),
+        onReload: () => reload(),
+      });
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setMonitorBusy(null);
+    }
+  };
+
+  const confirmAgSwitch = async (account: AntigravityAccount) => {
+    setMonitorBusy("antigravity-account");
+    try {
+      await runAntigravityConfirm(account, {
+        onNotify: (msg, tone) => notify(msg, tone === "warn" ? "info" : tone),
+        onReload: () => reload(),
+      });
     } catch (err) {
       notify(errorMessage(err), "error");
     } finally {
@@ -483,6 +495,7 @@ export function ModelsPage() {
                 showModels
                 accountBusy={monitorBusy === "antigravity-account"}
                 onSwitchAccount={(account) => void switchAgAccount(account)}
+                onConfirmSwitch={(account) => void confirmAgSwitch(account)}
                 onDeleteAccount={(account) => void deleteAgAccount(account)}
               />
             ))}

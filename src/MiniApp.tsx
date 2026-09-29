@@ -23,9 +23,9 @@ import {
   fetchUsage,
   antigravityAccounts,
   antigravityDeleteAccount,
-  antigravitySwitchAccount,
   type AntigravityAccount,
 } from "./lib/system";
+import { runAntigravitySwitch, runAntigravityConfirm } from "./lib/monitorStore";
 import { onUsageRefresh, onVaultChanged, openMainPage, showMainWindow, notifySettingsChanged } from "./lib/desktop";
 import { usageAdapterFor, usageExtraSecretFor } from "./lib/providers/usage";
 import { credentialRemainingPercent } from "./lib/alerts";
@@ -281,12 +281,24 @@ export function MiniApp() {
   const switchAccount = async (account: AntigravityAccount) => {
     setBusy("ag-account");
     try {
-      await antigravitySwitchAccount(account.id);
-      notify(
-        `${account.email ?? account.label} 계정으로 전환했습니다. Antigravity 재시작 후 ↻로 갱신하세요`,
-        "success",
-      );
-      reload();
+      await runAntigravitySwitch(account, {
+        onNotify: (msg, tone) => notify(msg, tone === "warn" ? "info" : tone),
+        onReload: () => reload(),
+      });
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirmAccount = async (account: AntigravityAccount) => {
+    setBusy("ag-account");
+    try {
+      await runAntigravityConfirm(account, {
+        onNotify: (msg, tone) => notify(msg, tone === "warn" ? "info" : tone),
+        onReload: () => reload(),
+      });
     } catch (err) {
       notify(errorMessage(err), "error");
     } finally {
@@ -479,6 +491,7 @@ export function MiniApp() {
               compact
               accountBusy={busy === "ag-account"}
               onSwitchAccount={(account) => void switchAccount(account)}
+              onConfirmSwitch={(account) => void confirmAccount(account)}
               onDeleteAccount={(account) => void deleteAccount(account)}
             />
           ))}
