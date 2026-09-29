@@ -100,9 +100,13 @@ export function MonitorCard({
           ? (details.primaryRemainingPercent as number)
           : null)
       : null;
-  const isLimitReached =
-    monitor === "opencode" && details?.limitReached === true;
   const displayRemaining = opencodePrimary ?? remaining;
+  const isLimitReached =
+    monitor === "opencode" &&
+    (details?.limitReached === true ||
+      (typeof details?.effectiveRemainingPercent === "number" &&
+        (details.effectiveRemainingPercent as number) <= 0) ||
+      (displayRemaining !== null && displayRemaining <= 0));
 
   const gauges = gaugesForMonitor(monitor, snapshot?.details_json ?? null, cap);
   const models = monitorModels(snapshot?.details_json ?? null);
