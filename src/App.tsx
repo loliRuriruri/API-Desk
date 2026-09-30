@@ -43,7 +43,6 @@ import {
   monitorRemainingPercent,
 } from "./lib/alerts";
 import { autostartLocalServices } from "./lib/localServices";
-import { refreshStaleUsageSnapshots } from "./lib/usageRefresh";
 import type { SearchResult } from "./types/domain";
 
 interface Route {
@@ -85,27 +84,10 @@ function MainApp() {
   const [entered, setEntered] = useState(false);
   const alertedRef = useRef<Set<string>>(new Set());
   const miniOpenedRef = useRef(false);
-  const usageRefreshedRef = useRef(false);
   const localServicesStartedRef = useRef(false);
 
   useEffect(() => {
     void notifyVaultChanged();
-  }, [vault?.state]);
-
-  useEffect(() => {
-    if (vault?.state !== "unlocked" || usageRefreshedRef.current) return;
-    usageRefreshedRef.current = true;
-    void (async () => {
-      try {
-        const updated = await refreshStaleUsageSnapshots(6 * 60 * 60 * 1000);
-        if (updated > 0) {
-          setRefreshNonce((current) => current + 1);
-          setRoute((current) => ({ ...current, nonce: Date.now() }));
-        }
-      } catch {
-        // automatic usage refresh is best-effort
-      }
-    })();
   }, [vault?.state]);
 
   useEffect(() => {

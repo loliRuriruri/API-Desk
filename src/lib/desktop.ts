@@ -32,16 +32,26 @@ export async function launchedFromAutostart(): Promise<boolean> {
 }
 
 export function onUsageRefresh(handler: () => void): () => void {
-  let unlisten: (() => void) | null = null;
+  let unlistenRefresh: (() => void) | null = null;
+  let unlistenUpdated: (() => void) | null = null;
   let disposed = false;
   void listen("usage-refresh", () => handler()).then((fn) => {
     if (disposed) fn();
-    else unlisten = fn;
+    else unlistenRefresh = fn;
+  });
+  void listen("usage-snapshot-updated", () => handler()).then((fn) => {
+    if (disposed) fn();
+    else unlistenUpdated = fn;
   });
   return () => {
     disposed = true;
-    unlisten?.();
+    unlistenRefresh?.();
+    unlistenUpdated?.();
   };
+}
+
+export async function residentRefreshUsage(force = false): Promise<number> {
+  return invoke<number>("resident_refresh_usage", { force });
 }
 
 export async function openMainPage(page: string): Promise<void> {

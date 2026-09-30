@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   listAllCredentialFields,
   listCredentialsWithContext,
@@ -96,7 +96,6 @@ export function MiniApp() {
   const [liveServices, setLiveServices] = useState<LocalServiceStatus[] | null>(null);
   const [alertsOn, setAlertsOn] = useState(true);
   const [alertThreshold, setAlertThreshold] = useState(20);
-  const autoRefreshedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -132,32 +131,6 @@ export function MiniApp() {
       notify(errorMessage(err), "error");
     }
   };
-
-  useEffect(() => {
-    if (!data || autoRefreshedRef.current) return;
-    autoRefreshedRef.current = true;
-    const stale = data.probes.filter((probe) => {
-      if (!probe.available) return false;
-      const snapshot = data.monitors.find((item) => item.monitor === probe.monitor);
-      if (!snapshot) return true;
-      const age = Date.now() - new Date(snapshot.fetched_at).getTime();
-      return Number.isNaN(age) || age > 5 * 60 * 1000;
-    });
-    if (stale.length === 0) return;
-    void (async () => {
-      await Promise.all(
-        stale.map(async (probe) => {
-          try {
-            const outcome = await monitorRefresh(probe.monitor);
-            await persistMonitorOutcome(outcome);
-          } catch {
-            // auto refresh is best-effort
-          }
-        }),
-      );
-      reload();
-    })();
-  }, [data, reload]);
 
   useEffect(() => onUsageRefresh(() => reload()), [reload]);
 

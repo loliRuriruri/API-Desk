@@ -141,6 +141,7 @@ fn app_paths(app: tauri::AppHandle) -> Result<AppPaths, AppError> {
 }
 
 fn quit_app(app: &tauri::AppHandle) {
+    resident::log(app, "resident", "quit_app called");
     // Exiting directly inside the tray menu event hangs on Windows because the
     // menu's modal message loop swallows the exit request. Defer it to a worker
     // thread and hard-exit as a watchdog if the graceful exit never completes.
@@ -149,6 +150,7 @@ fn quit_app(app: &tauri::AppHandle) {
         std::thread::sleep(std::time::Duration::from_millis(150));
         local_services::shutdown(&handle);
         turzx::shutdown(&handle);
+        resident::stop_usage_scheduler(&handle);
         handle.exit(0);
         std::thread::sleep(std::time::Duration::from_millis(4_000));
         std::process::exit(0);
@@ -377,6 +379,7 @@ pub fn run() {
             gpu_monitor::gpu_runtime_status,
             gpu_monitor::gpu_restart_sampler,
             resident::resident_status,
+            resident::resident_refresh_usage,
             turzx::turzx_settings,
             turzx::turzx_save_settings,
             turzx::turzx_status,
@@ -387,8 +390,28 @@ pub fn run() {
             turzx::turzx_preview,
             turzx::turzx_export_preview,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running API Desk");
+        .build(tauri::generate_context!())
+        .expect("error while building API Desk")
+        .run(|app_handle, event| match &event {
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                let resident = app_handle
+                    .try_state::<TrayState>()
+                    .map(|state| state.resident.load(Ordering::Relaxed))
+                    .unwrap_or(true);
+                resident::log(
+                    app_handle,
+                    "resident",
+                    &format!("RunEvent::ExitRequested code={code:?} resident={resident}"),
+                );
+                if resident {
+                    api.prevent_exit();
+                }
+            }
+            tauri::RunEvent::Exit => {
+                resident::log(app_handle, "resident", "RunEvent::Exit");
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]

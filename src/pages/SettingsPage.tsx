@@ -534,9 +534,11 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
               <td>API Tracker</td>
               <td className="mono">
                 {resident
-                  ? resident.usage.ready
-                    ? `Ready · 마지막 갱신 ${resident.usage.lastRefreshAt ?? "-"} (${resident.usage.updated}건)`
-                    : "Vault 잠금 대기"
+                  ? `${resident.usage.state ?? (resident.usage.ready ? "READY" : "WAITING_FOR_VAULT")}${
+                      resident.usage.lastRefreshAt
+                        ? ` · 마지막 갱신 ${resident.usage.lastRefreshAt} (${resident.usage.updated}건)`
+                        : ""
+                    }${resident.usage.lastError ? ` · ${resident.usage.lastError}` : ""}`
                   : "확인 중…"}
               </td>
             </tr>

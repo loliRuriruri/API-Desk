@@ -298,6 +298,12 @@ fn rows_from_db(app: &AppHandle) -> Vec<renderer::DisplayApiRow> {
 
 static API_ROWS_CACHE: Mutex<Option<(Vec<renderer::DisplayApiRow>, Instant)>> = Mutex::new(None);
 
+pub fn invalidate_api_rows_cache() {
+    if let Ok(mut guard) = API_ROWS_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 fn cached_api_rows(app: &AppHandle, ttl_secs: u64) -> Vec<renderer::DisplayApiRow> {
     if let Ok(guard) = API_ROWS_CACHE.lock() {
         if let Some((rows, fetched_at)) = guard.as_ref() {
@@ -1212,6 +1218,7 @@ mod tests {
         // 부팅 프레임 버퍼와 라이브 대시보드 버퍼의 불일치로 인한 스톨 방지:
         // READY 전환 시 previous_frame은 None이어야 하고, full redraw 사각형이 생성되어야 함
         let mut previous_frame: Option<Vec<u8>> = Some(vec![128u8; 320 * 480 * 3]); // 부팅 프레임 캐시 가정
+        assert!(previous_frame.is_some());
         
         // READY 상태 전환 시 dirty 캐시 무효화 (Spec §10)
         previous_frame = None;

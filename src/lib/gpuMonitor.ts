@@ -288,6 +288,7 @@ export interface ResidentStatus {
     enabled?: boolean;
   } | null;
   usage: {
+    state?: string;
     ready: boolean;
     lastRefreshAt: string | null;
     lastError: string | null;
