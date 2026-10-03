@@ -6,6 +6,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager, State};
 
 use super::diff::{self, DiffResultDto};
+use super::gc::{self, GcPlan, GcReport, StorageDetailDto};
 use super::models::{
     NoteFilter, NoteSummaryDto, NotepadNote, NotepadRescueSettings, NotepadSnapshot,
     RescueStatusDto, SearchResultDto, StorageStatistics, UpdateRescueSettingsDto,
@@ -370,6 +371,49 @@ pub async fn rescue_open_exported_note(_app: AppHandle, path: String) -> Result<
         let _ = path;
     }
     Ok(())
+}
+
+/// GC 정리 계획(Dry Run)을 조회합니다 (DB 및 디스크 파일 변경 없음).
+#[tauri::command]
+pub async fn rescue_gc_preview(app: AppHandle) -> Result<GcPlan, AppError> {
+    let pool = open_db_pool(&app).await?;
+    let store_root = super::storage_root(&app)?;
+    super::ensure_storage_dirs(&store_root)?;
+    let settings = repository::get_settings(&pool).await?;
+
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    gc::plan_gc(&pool, &store_root, &settings, now_epoch).await
+}
+
+/// GC 안전 정리를 실행합니다 (최신 스냅샷 절대 보존, 다중 테이블 참조 확인 후 물리 삭제).
+#[tauri::command]
+pub async fn rescue_gc_execute(app: AppHandle) -> Result<GcReport, AppError> {
+    let pool = open_db_pool(&app).await?;
+    let store_root = super::storage_root(&app)?;
+    super::ensure_storage_dirs(&store_root)?;
+    let settings = repository::get_settings(&pool).await?;
+
+    let now_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    gc::execute_gc(&pool, &store_root, &settings, now_epoch).await
+}
+
+/// 상세 스토리지 현황(논리/물리 크기, 중복제거, 쿼터)을 조회합니다.
+#[tauri::command]
+pub async fn rescue_get_storage_details(app: AppHandle) -> Result<StorageDetailDto, AppError> {
+    let pool = open_db_pool(&app).await?;
+    let store_root = super::storage_root(&app)?;
+    super::ensure_storage_dirs(&store_root)?;
+    let settings = repository::get_settings(&pool).await?;
+
+    gc::get_storage_details(&pool, &store_root, &settings).await
 }
 
 #[cfg(test)]

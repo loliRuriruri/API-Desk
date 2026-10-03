@@ -79,6 +79,48 @@ export interface DiffResultDto {
   message?: string | null;
 }
 
+export interface GcPlan {
+  expiredSnapshotIds: string[];
+  expiredNoteIds: string[];
+  unreferencedBlobHashes: string[];
+  reclaimableBlobBytes: number;
+  staleTmpFiles: string[];
+  staleTmpBytes: number;
+  orphanBlobsToDelete: string[];
+  orphanBlobBytes: number;
+  totalReclaimableBytes: number;
+  currentStorageBytes: number;
+  estimatedStorageAfterBytes: number;
+  hasQuotaPressure: boolean;
+}
+
+export interface GcReport {
+  deletedSnapshotsCount: number;
+  deletedNotesCount: number;
+  deletedBlobsCount: number;
+  deletedBlobsBytes: number;
+  deletedTmpCount: number;
+  deletedTmpBytes: number;
+  deletedOrphansCount: number;
+  totalReclaimedBytes: number;
+  hasQuotaPressure: boolean;
+  storageAfterBytes: number;
+}
+
+export interface StorageDetailDto {
+  logicalSnapshotCount: number;
+  physicalBlobCount: number;
+  logicalSourceBytes: number;
+  physicalDiskBytes: number;
+  deduplicatedBytes: number;
+  reclaimableBytes: number;
+  orphanBlobCount: number;
+  tmpBytes: number;
+  maxStorageBytes: number;
+  quotaPercentage: number;
+  hasQuotaPressure: boolean;
+}
+
 export interface NotepadSnapshot {
   id: string;
   noteId: string;
@@ -224,6 +266,18 @@ export async function cleanupStale(): Promise<StorageStatistics> {
 
 export async function openExportedNote(path: string): Promise<void> {
   return invoke<void>("rescue_open_exported_note", { path });
+}
+
+export async function gcPreview(): Promise<GcPlan> {
+  return invoke<GcPlan>("rescue_gc_preview");
+}
+
+export async function gcExecute(): Promise<GcReport> {
+  return invoke<GcReport>("rescue_gc_execute");
+}
+
+export async function getStorageDetails(): Promise<StorageDetailDto> {
+  return invoke<StorageDetailDto>("rescue_get_storage_details");
 }
 
 // ============================================================================

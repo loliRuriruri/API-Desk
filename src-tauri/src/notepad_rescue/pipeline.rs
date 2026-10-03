@@ -99,6 +99,10 @@ pub async fn capture_state_file(
     // 2. 전체 바이너리 바이트열 SHA-256 계산
     let hash = snapshot::compute_sha256(&data);
 
+    // GC 동시성 방어: 신규 스냅샷 물리 CAS 저장 및 DB 등록 중 GC에 의한 삭제 방지
+    let gc_lock = super::gc::get_gc_mutex();
+    let _guard = gc_lock.lock().await;
+
     // 3. Content-Addressed Physical Storage에 원자적 저장 (물리적 중복 제거)
     let rel_snapshot_path = snapshot::store_blob(storage_root, &hash, &data)?;
 
