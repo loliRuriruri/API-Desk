@@ -181,7 +181,7 @@ pub async fn capture_state_file(
             };
 
             if let Some(app_handle) = app {
-                let _ = app_handle.emit("notepad-rescue:snapshot-created", &event);
+                let _ = app_handle.emit("rescue://snapshot-created", &event);
             }
 
             Ok(Some(event))
@@ -247,7 +247,7 @@ pub async fn handle_file_removed(
         };
 
         if let Some(app_handle) = app {
-            let _ = app_handle.emit("notepad-rescue:note-deleted", &event);
+            let _ = app_handle.emit("rescue://note-deleted", &event);
         }
 
         Ok(Some(event))

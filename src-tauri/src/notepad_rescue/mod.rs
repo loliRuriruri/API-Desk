@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
 use crate::error::AppError;
@@ -98,6 +98,16 @@ pub fn start_worker(app: &tauri::AppHandle) {
         };
 
         if !settings.enabled || !settings.watch_enabled {
+            let _ = handle.emit(
+                "rescue://status",
+                &RescueStatusEvent {
+                    enabled: settings.enabled,
+                    watch_enabled: settings.watch_enabled,
+                    is_watching: false,
+                    status: "DISABLED".to_string(),
+                    message: None,
+                },
+            );
             return;
         }
 
@@ -109,7 +119,19 @@ pub fn start_worker(app: &tauri::AppHandle) {
 
         let local_state = match watcher::default_notepad_local_state_dir() {
             Some(dir) => dir,
-            None => return,
+            None => {
+                let _ = handle.emit(
+                    "rescue://status",
+                    &RescueStatusEvent {
+                        enabled: settings.enabled,
+                        watch_enabled: settings.watch_enabled,
+                        is_watching: false,
+                        status: "NOTEPAD_NOT_FOUND".to_string(),
+                        message: Some("메모장 로컬 상태 폴더를 찾을 수 없습니다".to_string()),
+                    },
+                );
+                return;
+            }
         };
 
         let tab_dir = local_state.join("TabState");
@@ -131,12 +153,32 @@ pub fn start_worker(app: &tauri::AppHandle) {
                 let mut guard = rescue_state.watcher_handle.lock().await;
                 *guard = Some(w);
                 crate::resident::log(&handle, "notepad_rescue", "watcher worker started");
+                let _ = handle.emit(
+                    "rescue://status",
+                    &RescueStatusEvent {
+                        enabled: true,
+                        watch_enabled: true,
+                        is_watching: true,
+                        status: "ACTIVE".to_string(),
+                        message: None,
+                    },
+                );
             }
             Err(e) => {
                 crate::resident::log(
                     &handle,
                     "notepad_rescue",
                     &format!("watcher start failed: {e}"),
+                );
+                let _ = handle.emit(
+                    "rescue://status",
+                    &RescueStatusEvent {
+                        enabled: true,
+                        watch_enabled: true,
+                        is_watching: false,
+                        status: "WATCHER_ERROR".to_string(),
+                        message: Some(e.to_string()),
+                    },
                 );
             }
         }
@@ -148,11 +190,22 @@ pub fn shutdown(app: &tauri::AppHandle) {
     if let Some(state) = app.try_state::<NotepadRescueState>() {
         state.is_watching.store(false, Ordering::Relaxed);
         let handle = state.watcher_handle.clone();
+        let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             let mut guard = handle.lock().await;
             if let Some(w) = guard.take() {
                 w.stop();
             }
+            let _ = app_handle.emit(
+                "rescue://status",
+                &RescueStatusEvent {
+                    enabled: true,
+                    watch_enabled: true,
+                    is_watching: false,
+                    status: "DISABLED".to_string(),
+                    message: None,
+                },
+            );
         });
     }
 }
@@ -754,6 +807,56 @@ mod tests {
                     assert!(stats.total_snapshots > 0);
 
                     let _ = std::fs::remove_dir_all(&temp_store);
+                });
+            }
+        }
+    }
+
+    // 실제 Windows 11 Notepad 탭 파싱 검증을 위한 수동/선택적 라이브 테스트
+    #[test]
+    #[ignore = "수동 라이브 검증용: 메모장에 'NR3-LIVE-PARSER-CHECK-001' 내용의 탭을 열어둔 후 실행"]
+    fn test_live_notepad_tabstate_marker_validation_manual() {
+        if let Some(local_state) = watcher::default_notepad_local_state_dir() {
+            let tab_dir = local_state.join("TabState");
+            let win_dir = local_state.join("WindowState");
+            if tab_dir.is_dir() {
+                tauri::async_runtime::block_on(async {
+                    let pool = create_test_db().await;
+                    let temp_store = std::env::temp_dir().join("nr3-marker-validation-store");
+                    let _ = std::fs::remove_dir_all(&temp_store);
+
+                    let _ = scan_and_reconcile(&tab_dir, &win_dir, &pool, &temp_store, None).await;
+
+                    let notes =
+                        repository::list_notes(&pool, &super::models::NoteFilter::default())
+                            .await
+                            .unwrap();
+                    let mut found_marker = false;
+                    for note in notes {
+                        let snaps = repository::list_note_snapshots(&pool, &note.id)
+                            .await
+                            .unwrap();
+                        for snap in snaps {
+                            if let Some(ref text) = snap.recovered_text {
+                                if text.contains("NR3-LIVE-PARSER-CHECK-001") {
+                                    found_marker = true;
+                                    assert_eq!(snap.parse_status, ParseStatus::Parsed);
+                                    assert!(!snap.content_hash.is_empty());
+                                    assert!(!note.source_id.is_empty());
+                                    let blob_path =
+                                        resolve_blob_path(&temp_store, &snap.raw_snapshot_path);
+                                    assert!(blob_path.exists());
+                                    break;
+                                }
+                            }
+                        }
+                        if found_marker {
+                            break;
+                        }
+                    }
+
+                    let _ = std::fs::remove_dir_all(&temp_store);
+                    assert!(found_marker, "마커 'NR3-LIVE-PARSER-CHECK-001'가 포함된 메모장 탭이 감지 및 정상 파싱되어야 합니다.");
                 });
             }
         }

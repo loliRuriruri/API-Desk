@@ -98,7 +98,10 @@ pub fn safe_read_file(path: &Path) -> Result<Vec<u8>, AppError> {
                 thread::sleep(RETRY_DELAY);
                 continue;
             }
-            // 마지막 시도에서도 불일치하면 읽어낸 최신 버퍼를 반환 (다음 watcher 주기에서 재캡처 가능)
+            return Err(AppError::Io(format!(
+                "파일 읽기 일관성 검증 실패 (동시 수정 감지): {}",
+                path.display()
+            )));
         }
 
         return Ok(buffer);

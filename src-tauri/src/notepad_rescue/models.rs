@@ -204,6 +204,7 @@ pub struct RescueStatusEvent {
     pub enabled: bool,
     pub watch_enabled: bool,
     pub is_watching: bool,
+    pub status: String,
     pub message: Option<String>,
 }
 
