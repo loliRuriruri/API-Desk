@@ -429,6 +429,7 @@ pub fn extract_snippet(text: &str, query: &str, max_chars: usize) -> Option<Stri
         })
         .collect();
 
+    // Unicode-aware lowercase comparison
     let lower_text = clean_text.to_lowercase();
     let lower_query = query.to_lowercase();
 

@@ -128,7 +128,9 @@ fn chrono_or_simple_parse(ts: &str) -> Result<i64, ()> {
 
 fn strip_unc_prefix(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
-    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+    if let Some(stripped_unc) = s.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{}", stripped_unc))
+    } else if let Some(stripped) = s.strip_prefix(r"\\?\") {
         PathBuf::from(stripped)
     } else {
         path.to_path_buf()
@@ -150,33 +152,107 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
-/// 경로 탐색(Path Traversal) 공격 방어: 대상 파일이 정확히 storage_root 하위에 위치하는지 검증합니다.
+#[cfg(windows)]
+fn is_reparse_point_or_symlink(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return true;
+        }
+        // FILE_ATTRIBUTE_REPARSE_POINT = 0x400 (심볼릭 링크 및 디렉터리 정션)
+        if (meta.file_attributes() & 0x00000400) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point_or_symlink(path: &Path) -> bool {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        meta.file_type().is_symlink()
+    } else {
+        false
+    }
+}
+
+fn has_suspicious_stream_or_chars(path: &Path) -> bool {
+    let unced = strip_unc_prefix(path);
+    let s = unced.to_string_lossy();
+    // Windows 드라이브 문자(예: "C:\") 뒤에 콜론(':')이 추가로 존재하면 NTFS 대체 데이터 스트림(ADS) 의심
+    let after_drive = if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        &s[2..]
+    } else {
+        &s
+    };
+    after_drive.contains(':')
+}
+
+/// 경로 탐색(Path Traversal) 및 파일시스템 탈출 공격 방어:
+/// 대상 파일이 정확히 storage_root 하위에 위치하며 심볼릭 링크/정션 우회가 없는지 엄격히 검증합니다.
 pub fn verify_path_within_root(storage_root: &Path, target_path: &Path) -> Result<(), AppError> {
+    if has_suspicious_stream_or_chars(target_path) {
+        return Err(AppError::InvalidRequest(format!(
+            "보안 위반: 의심스러운 파일 스트림(ADS) 또는 잘못된 경로 문자입니다: {}",
+            target_path.display()
+        )));
+    }
+
+    // 심볼릭 링크 또는 재분석 지점(Junction) 파일 탐지 시 즉시 차단 (Fail-Closed)
+    if is_reparse_point_or_symlink(target_path) {
+        return Err(AppError::InvalidRequest(format!(
+            "보안 위반: 심볼릭 링크 또는 재분석 지점(Junction) 파일 삭제는 금지됩니다: {}",
+            target_path.display()
+        )));
+    }
+
     let canon_root = if storage_root.exists() {
-        storage_root
-            .canonicalize()
-            .unwrap_or_else(|_| storage_root.to_path_buf())
+        storage_root.canonicalize().map_err(|e| {
+            AppError::Io(format!(
+                "스토리지 루트 표준화 실패: {} ({e})",
+                storage_root.display()
+            ))
+        })?
     } else {
         storage_root.to_path_buf()
     };
     let norm_root = normalize_path(&canon_root);
 
-    let canon_target = if target_path.exists() {
-        target_path
-            .canonicalize()
-            .unwrap_or_else(|_| target_path.to_path_buf())
+    let norm_target = if target_path.exists() {
+        let canon = target_path.canonicalize().map_err(|e| {
+            AppError::Io(format!(
+                "대상 경로 표준화 실패: {} ({e})",
+                target_path.display()
+            ))
+        })?;
+        normalize_path(&canon)
     } else {
-        target_path.to_path_buf()
+        // 존재하지 않는 파일인 경우 부모 경로 중 심볼릭 링크/정션이 있는지 확인 (Fail-Closed)
+        let mut curr = target_path.parent();
+        while let Some(parent) = curr {
+            if parent.exists() {
+                if is_reparse_point_or_symlink(parent) {
+                    return Err(AppError::InvalidRequest(format!(
+                        "보안 위반: 심볼릭 링크 또는 재분석 지점 상위 경로가 감지되었습니다: {}",
+                        parent.display()
+                    )));
+                }
+                break;
+            }
+            curr = parent.parent();
+        }
+        normalize_path(target_path)
     };
-    let norm_target = normalize_path(&canon_target);
 
     let root_str = norm_root.to_string_lossy().to_lowercase().replace('/', "\\");
     let target_str = norm_target.to_string_lossy().to_lowercase().replace('/', "\\");
 
-    let is_inside = if target_str == root_str {
+    let clean_root = root_str.trim_end_matches('\\');
+
+    let is_inside = if target_str == clean_root {
         true
-    } else if target_str.starts_with(&root_str) {
-        let remainder = &target_str[root_str.len()..];
+    } else if target_str.starts_with(clean_root) {
+        let remainder = &target_str[clean_root.len()..];
         remainder.starts_with('\\')
     } else {
         false
@@ -752,18 +828,67 @@ mod tests {
         let temp_dir = std::env::temp_dir().join("nr4-test-boundary");
         let _ = fs::create_dir_all(&temp_dir);
 
-        // 정당한 하위 경로 -> 통과
+        // 1. 정당한 하위 경로 -> 통과
         let valid_child = temp_dir.join("snapshots").join("12").join("file.bin");
         assert!(verify_path_within_root(&temp_dir, &valid_child).is_ok());
 
-        // 경로 탈출 시도 (..) -> 차단
+        // 2. 루트 경로에 후행 슬래시(\)가 붙어있는 경우 정상 하위 경로 판정 보장
+        let root_with_trailing = PathBuf::from(format!("{}\\", temp_dir.to_string_lossy()));
+        assert!(verify_path_within_root(&root_with_trailing, &valid_child).is_ok());
+
+        // 3. 경로 탈출 시도 (..) -> 차단
         let malicious_path = temp_dir.join("..").join("secret.txt");
         assert!(verify_path_within_root(&temp_dir, &malicious_path).is_err());
+        let deeper_malicious = temp_dir.join("snapshots").join("..").join("..").join("evil.txt");
+        assert!(verify_path_within_root(&temp_dir, &deeper_malicious).is_err());
 
-        // 시스템 루트 직접 접근 시도 -> 차단
+        // 4. 시스템 절대 경로 탈출 시도 -> 차단
         let abs_escape = PathBuf::from("C:\\Windows\\System32\\calc.exe");
         assert!(verify_path_within_root(&temp_dir, &abs_escape).is_err());
 
+        // 5. 다른 Windows 드라이브 문자 탈출 시도 -> 차단
+        let diff_drive = PathBuf::from("Z:\\storage_escape\\blob.bin");
+        assert!(verify_path_within_root(&temp_dir, &diff_drive).is_err());
+
+        // 6. \\?\ 확장 경로 접두사: 루트 내부 정상 접근은 허용, 외부 접근은 차단
+        let unc_valid = PathBuf::from(format!(r"\\?\{}", valid_child.to_string_lossy()));
+        assert!(verify_path_within_root(&temp_dir, &unc_valid).is_ok());
+        let unc_invalid = PathBuf::from(r"\\?\C:\Windows\System32\calc.exe");
+        assert!(verify_path_within_root(&temp_dir, &unc_invalid).is_err());
+
+        // 7. UNC 네트워크 경로 접근 시도 -> 차단
+        let unc_share = PathBuf::from(r"\\evil-server\share\target.bin");
+        assert!(verify_path_within_root(&temp_dir, &unc_share).is_err());
+        let unc_extended = PathBuf::from(r"\\?\UNC\evil-server\share\target.bin");
+        assert!(verify_path_within_root(&temp_dir, &unc_extended).is_err());
+
+        // 8. NTFS 대체 데이터 스트림 (ADS) 시도 -> 차단
+        let ads_path = valid_child.with_file_name("file.bin:evil_stream");
+        assert!(verify_path_within_root(&temp_dir, &ads_path).is_err());
+
+        // 9. 심볼릭 링크 / 재분석 지점 차단 (Fail-Closed)
+        // 실제 파일 생성 후 심볼릭 링크 시도
+        let actual_file = temp_dir.join("real.bin");
+        let _ = fs::write(&actual_file, b"test content");
+        let symlink_path = temp_dir.join("symlink_test.bin");
+
+        #[cfg(windows)]
+        {
+            // Windows에서 심볼릭 링크 생성이 권한(SeCreateSymbolicLinkPrivilege/개발자 모드)에 따라 제한될 수 있음
+            if std::os::windows::fs::symlink_file(&actual_file, &symlink_path).is_ok() {
+                assert!(verify_path_within_root(&temp_dir, &symlink_path).is_err(), "심볼릭 링크 파일은 fail-closed로 거부되어야 함");
+                let _ = fs::remove_file(&symlink_path);
+            }
+        }
+        #[cfg(unix)]
+        {
+            if std::os::unix::fs::symlink(&actual_file, &symlink_path).is_ok() {
+                assert!(verify_path_within_root(&temp_dir, &symlink_path).is_err());
+                let _ = fs::remove_file(&symlink_path);
+            }
+        }
+
+        let _ = fs::remove_file(&actual_file);
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
