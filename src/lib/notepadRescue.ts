@@ -40,6 +40,45 @@ export interface NoteSummaryDto {
   previewText?: string | null;
 }
 
+export type SearchScope = "ALL" | "TITLE" | "PATH" | "CONTENT";
+
+export interface SearchResultDto {
+  noteId: string;
+  sourceId: string;
+  displayTitle: string;
+  originalPath?: string | null;
+  isSaved: boolean;
+  isDeleted: boolean;
+  lastSeenAt: string;
+  matchedScope: "TITLE" | "PATH" | "CONTENT" | string;
+  snippet?: string | null;
+  versionCount: number;
+  lastSnapshotAt?: string | null;
+}
+
+export type DiffKind = "UNCHANGED" | "ADDED" | "REMOVED";
+
+export interface DiffBlock {
+  kind: DiffKind;
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: string[];
+}
+
+export interface DiffResultDto {
+  noteId: string;
+  baseSnapshotId: string;
+  targetSnapshotId: string;
+  isTooLarge: boolean;
+  totalAddedLines: number;
+  totalRemovedLines: number;
+  totalUnchangedLines: number;
+  blocks: DiffBlock[];
+  message?: string | null;
+}
+
 export interface NotepadSnapshot {
   id: string;
   noteId: string;
@@ -124,6 +163,34 @@ export async function listNotes(
 
 export async function getNote(noteId: string): Promise<NoteSummaryDto | null> {
   return invoke<NoteSummaryDto | null>("rescue_get_note", { noteId });
+}
+
+export async function searchNotes(
+  query: string,
+  scope: SearchScope = "ALL",
+  includeDeleted: boolean = false,
+  limit: number = 50,
+  offset: number = 0,
+): Promise<SearchResultDto[]> {
+  return invoke<SearchResultDto[]>("rescue_search_notes", {
+    query,
+    scope,
+    includeDeleted,
+    limit,
+    offset,
+  });
+}
+
+export async function diffSnapshots(
+  noteId: string,
+  baseSnapshotId: string,
+  targetSnapshotId: string,
+): Promise<DiffResultDto> {
+  return invoke<DiffResultDto>("rescue_diff_snapshots", {
+    noteId,
+    baseSnapshotId,
+    targetSnapshotId,
+  });
 }
 
 export async function listSnapshots(noteId: string): Promise<NotepadSnapshot[]> {

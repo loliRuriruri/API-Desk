@@ -277,3 +277,20 @@ pub struct UpdateRescueSettingsDto {
     pub deleted_retention_days: Option<u32>,
     pub max_storage_bytes: Option<u64>,
 }
+
+/// 백엔드 검색 결과 DTO (대용량 본문 대신 매칭 위치 주변의 제한된 스니펫 반환).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResultDto {
+    pub note_id: String,
+    pub source_id: String,
+    pub display_title: String,
+    pub original_path: Option<String>,
+    pub is_saved: bool,
+    pub is_deleted: bool,
+    pub last_seen_at: String,
+    pub matched_scope: String,
+    pub snippet: Option<String>,
+    pub version_count: i64,
+    pub last_snapshot_at: Option<String>,
+}

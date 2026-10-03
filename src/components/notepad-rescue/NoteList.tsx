@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import { type NoteSummaryDto, formatRelativeTime } from "../../lib/notepadRescue";
 import { Badge } from "../Badges";
 import { EmptyState } from "../EmptyState";
@@ -14,6 +13,38 @@ interface NoteListProps {
   loading: boolean;
 }
 
+/// 검색어 하이라이팅 컴포넌트 (raw HTML 주입 없이 React 텍스트 노드로 안전하게 렌더링).
+function HighlightMatch({ text, query }: { text: string; query: string }) {
+  if (!query.trim()) return <>{text}</>;
+  const trimmed = query.trim();
+  const lowerText = text.toLowerCase();
+  const lowerQuery = trimmed.toLowerCase();
+  const idx = lowerText.indexOf(lowerQuery);
+  if (idx === -1) return <>{text}</>;
+
+  const before = text.slice(0, idx);
+  const match = text.slice(idx, idx + trimmed.length);
+  const after = text.slice(idx + trimmed.length);
+
+  return (
+    <>
+      {before}
+      <span
+        style={{
+          background: "rgba(234, 179, 8, 0.25)",
+          color: "#facc15",
+          fontWeight: "bold",
+          borderRadius: "2px",
+          padding: "0 2px",
+        }}
+      >
+        {match}
+      </span>
+      {after}
+    </>
+  );
+}
+
 export function NoteList({
   notes,
   selectedNoteId,
@@ -24,16 +55,8 @@ export function NoteList({
   onSearchChange,
   loading,
 }: NoteListProps) {
-  const filteredNotes = useMemo(() => {
-    if (!searchQuery.trim()) return notes;
-    const q = searchQuery.toLowerCase();
-    return notes.filter(
-      (n) =>
-        n.displayTitle.toLowerCase().includes(q) ||
-        (n.originalPath && n.originalPath.toLowerCase().includes(q)) ||
-        (n.previewText && n.previewText.toLowerCase().includes(q)),
-    );
-  }, [notes, searchQuery]);
+  // 백엔드에서 카테고리 및 검색 필터링/스니펫을 처리하므로 notes 목록을 직접 사용
+  const displayNotes = notes;
 
   return (
     <div className="notepad-rescue-note-list-container">
@@ -90,7 +113,7 @@ export function NoteList({
           <div className="empty-state-container">
             <span className="text-muted">메모 목록을 불러오는 중…</span>
           </div>
-        ) : filteredNotes.length === 0 ? (
+        ) : displayNotes.length === 0 ? (
           <div className="empty-state-container">
             <EmptyState
               text={
@@ -109,7 +132,7 @@ export function NoteList({
           </div>
         ) : (
           <div className="note-row-list">
-            {filteredNotes.map((note) => {
+            {displayNotes.map((note) => {
               const isSelected = note.id === selectedNoteId;
               return (
                 <div
@@ -126,7 +149,10 @@ export function NoteList({
                 >
                   <div className="note-row-top">
                     <span className="note-row-title" title={note.displayTitle}>
-                      {note.displayTitle || "제목 없는 메모"}
+                      <HighlightMatch
+                        text={note.displayTitle || "제목 없는 메모"}
+                        query={searchQuery}
+                      />
                     </span>
                     <span className="note-row-time">
                       {formatRelativeTime(note.lastSnapshotAt || note.lastSeenAt)}
@@ -135,13 +161,19 @@ export function NoteList({
 
                   {note.originalPath && (
                     <div className="note-row-path" title={note.originalPath}>
-                      {note.originalPath}
+                      <HighlightMatch
+                        text={note.originalPath}
+                        query={searchQuery}
+                      />
                     </div>
                   )}
 
                   <div className="note-row-preview">
                     {note.previewText ? (
-                      note.previewText
+                      <HighlightMatch
+                        text={note.previewText}
+                        query={searchQuery}
+                      />
                     ) : (
                       <span className="text-faint">(텍스트 내용 없음)</span>
                     )}

@@ -5,9 +5,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager, State};
 
+use super::diff::{self, DiffResultDto};
 use super::models::{
     NoteFilter, NoteSummaryDto, NotepadNote, NotepadRescueSettings, NotepadSnapshot,
-    RescueStatusDto, StorageStatistics, UpdateRescueSettingsDto,
+    RescueStatusDto, SearchResultDto, StorageStatistics, UpdateRescueSettingsDto,
 };
 use super::repository;
 use super::watcher;
@@ -108,6 +109,64 @@ pub async fn rescue_list_notes(
         offset,
     };
     repository::list_notes_summary(&pool, &filter).await
+}
+
+/// 노트 검색 (제목, 경로, 본문 스냅샷 대상, 제한된 스니펫 반환).
+#[tauri::command]
+pub async fn rescue_search_notes(
+    app: AppHandle,
+    query: String,
+    scope: Option<String>,
+    include_deleted: Option<bool>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<SearchResultDto>, AppError> {
+    let pool = open_db_pool(&app).await?;
+    repository::search_notes(
+        &pool,
+        &query,
+        scope.as_deref(),
+        include_deleted.unwrap_or(false),
+        limit.unwrap_or(50),
+        offset.unwrap_or(0),
+    )
+    .await
+}
+
+/// 동일 노트의 두 스냅샷 간의 라인 diff를 비교합니다.
+#[tauri::command]
+pub async fn rescue_diff_snapshots(
+    app: AppHandle,
+    note_id: String,
+    base_snapshot_id: String,
+    target_snapshot_id: String,
+) -> Result<DiffResultDto, AppError> {
+    let pool = open_db_pool(&app).await?;
+
+    let base_snap = repository::get_snapshot(&pool, &base_snapshot_id)
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("기준 스냅샷을 찾을 수 없습니다".into()))?;
+
+    let target_snap = repository::get_snapshot(&pool, &target_snapshot_id)
+        .await?
+        .ok_or_else(|| AppError::InvalidRequest("대상 스냅샷을 찾을 수 없습니다".into()))?;
+
+    if base_snap.note_id != note_id || target_snap.note_id != note_id {
+        return Err(AppError::InvalidRequest(
+            "서로 다른 노트의 스냅샷은 비교할 수 없습니다".into(),
+        ));
+    }
+
+    let base_text = base_snap.recovered_text.as_deref().unwrap_or("");
+    let target_text = target_snap.recovered_text.as_deref().unwrap_or("");
+
+    Ok(diff::compare_texts(
+        &note_id,
+        &base_snapshot_id,
+        &target_snapshot_id,
+        base_text,
+        target_text,
+    ))
 }
 
 /// 특정 노트의 상세 정보를 조회합니다.

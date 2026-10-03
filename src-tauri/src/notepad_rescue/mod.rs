@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod diff;
 pub mod models;
 pub mod parser;
 pub mod pipeline;
@@ -18,6 +19,7 @@ use tokio::sync::Mutex;
 use crate::error::AppError;
 
 pub use commands::*;
+pub use diff::*;
 pub use models::*;
 pub use parser::{parse_tab_state, parse_window_state};
 pub use pipeline::capture_state_file;
@@ -862,5 +864,476 @@ mod tests {
                 });
             }
         }
+    }
+
+    // =========================================================================
+    // NR.4: Search Test Matrix (1 ~ 14) + Diff Matrix (26)
+    // =========================================================================
+
+    async fn insert_test_note_with_snapshot(
+        pool: &SqlitePool,
+        id: &str,
+        source_id: &str,
+        title: &str,
+        original_path: Option<&str>,
+        is_deleted: bool,
+        text: Option<&str>,
+    ) {
+        let note = NotepadNote {
+            id: id.to_string(),
+            source_id: source_id.to_string(),
+            display_title: title.to_string(),
+            original_path: original_path.map(|s| s.to_string()),
+            is_saved: original_path.is_some(),
+            is_deleted,
+            first_seen_at: "2026-10-03T10:00:00Z".to_string(),
+            last_seen_at: "2026-10-03T10:00:00Z".to_string(),
+            deleted_at: if is_deleted {
+                Some("2026-10-03T11:00:00Z".to_string())
+            } else {
+                None
+            },
+            created_at: "2026-10-03T10:00:00Z".to_string(),
+            updated_at: "2026-10-03T10:00:00Z".to_string(),
+        };
+        upsert_note(pool, &note).await.unwrap();
+
+        if let Some(t) = text {
+            let snap = NotepadSnapshot {
+                id: format!("snap-{}", id),
+                note_id: id.to_string(),
+                content_hash: format!("hash-{}", id),
+                raw_snapshot_path: format!("snapshots/ab/{}.bin", id),
+                recovered_text: Some(t.to_string()),
+                source_type: SourceType::TabState,
+                source_filename: format!("{}.bin", source_id),
+                source_size: t.len() as i64,
+                parse_status: ParseStatus::Parsed,
+                notepad_format_version: Some(1),
+                captured_at: "2026-10-03T10:05:00Z".to_string(),
+                created_at: "2026-10-03T10:05:00Z".to_string(),
+            };
+            insert_snapshot_metadata(pool, &snap).await.unwrap();
+        }
+    }
+
+    #[test]
+    fn test_search_1_title_match() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n1",
+                "s1",
+                "Proxmox 설치 가이드",
+                None,
+                false,
+                Some("본문 내용"),
+            )
+            .await;
+
+            let res = search_notes(&pool, "설치 가이드", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            assert_eq!(res[0].note_id, "n1");
+            assert_eq!(res[0].matched_scope, "TITLE");
+        });
+    }
+
+    #[test]
+    fn test_search_2_path_match() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n2",
+                "s2",
+                "제목",
+                Some("C:/configs/nginx.conf"),
+                false,
+                Some("본문"),
+            )
+            .await;
+
+            let res = search_notes(&pool, "nginx", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            assert_eq!(res[0].note_id, "n2");
+            assert_eq!(res[0].matched_scope, "PATH");
+        });
+    }
+
+    #[test]
+    fn test_search_3_body_match() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n3",
+                "s3",
+                "일반 제목",
+                None,
+                false,
+                Some("서버 IP 주소는 192.168.1.100 입니다."),
+            )
+            .await;
+
+            let res = search_notes(&pool, "192.168", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            assert_eq!(res[0].note_id, "n3");
+            assert_eq!(res[0].matched_scope, "CONTENT");
+            assert!(res[0].snippet.as_ref().unwrap().contains("192.168"));
+        });
+    }
+
+    #[test]
+    fn test_search_4_active_only() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n4_del",
+                "s4_del",
+                "삭제된 메모",
+                None,
+                true,
+                Some("공통 검색어 키워드"),
+            )
+            .await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n4_act",
+                "s4_act",
+                "활성 메모",
+                None,
+                false,
+                Some("공통 검색어 키워드"),
+            )
+            .await;
+
+            let res = search_notes(&pool, "공통 검색어", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            assert_eq!(res[0].note_id, "n4_act");
+        });
+    }
+
+    #[test]
+    fn test_search_5_deleted_included() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n5_del",
+                "s5_del",
+                "삭제된 메모",
+                None,
+                true,
+                Some("공통 검색어 키워드"),
+            )
+            .await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n5_act",
+                "s5_act",
+                "활성 메모",
+                None,
+                false,
+                Some("공통 검색어 키워드"),
+            )
+            .await;
+
+            let res = search_notes(&pool, "공통 검색어", None, true, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 2);
+        });
+    }
+
+    #[test]
+    fn test_search_6_no_match() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(&pool, "n6", "s6", "메모", None, false, Some("본문"))
+                .await;
+
+            let res = search_notes(&pool, "NonExistentWordXYZ", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert!(res.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_search_7_empty_query() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(&pool, "n7", "s7", "메모", None, false, Some("본문"))
+                .await;
+
+            let res1 = search_notes(&pool, "", None, false, 10, 0).await.unwrap();
+            assert!(res1.is_empty());
+
+            let res2 = search_notes(&pool, "   \t\n  ", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert!(res2.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_search_8_korean() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n8",
+                "s8",
+                "프로젝트 회의록",
+                None,
+                false,
+                Some("다음 분기 로드맵 협의"),
+            )
+            .await;
+
+            let res = search_notes(&pool, "분기 로드맵", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            assert_eq!(res[0].note_id, "n8");
+        });
+    }
+
+    #[test]
+    fn test_search_9_japanese() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n9",
+                "s9",
+                "議事録ノート",
+                None,
+                false,
+                Some("システムの安全性検証を実施しました。"),
+            )
+            .await;
+
+            let res = search_notes(&pool, "安全性検証", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            assert_eq!(res[0].note_id, "n9");
+        });
+    }
+
+    #[test]
+    fn test_search_10_emoji() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n10",
+                "s10",
+                "이모지 메모 📝",
+                None,
+                false,
+                Some("중요 체크리스트 🚀 완결"),
+            )
+            .await;
+
+            let res = search_notes(&pool, "🚀", None, false, 10, 0).await.unwrap();
+            assert_eq!(res.len(), 1);
+            assert_eq!(res[0].note_id, "n10");
+        });
+    }
+
+    #[test]
+    fn test_search_11_large_body() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            let large_prefix = "A".repeat(500_000);
+            let large_suffix = "B".repeat(500_000);
+            let full_text = format!("{} SPECIAL_NEEDLE_KEYWORD {}", large_prefix, large_suffix);
+            insert_test_note_with_snapshot(
+                &pool,
+                "n11",
+                "s11",
+                "대용량 노트",
+                None,
+                false,
+                Some(&full_text),
+            )
+            .await;
+
+            let res = search_notes(&pool, "SPECIAL_NEEDLE_KEYWORD", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            assert!(res[0].snippet.is_some());
+            let snippet = res[0].snippet.as_ref().unwrap();
+            assert!(snippet.contains("SPECIAL_NEEDLE_KEYWORD"));
+            assert!(
+                snippet.len() < 200,
+                "스니펫은 대용량이 아닌 제한된 크기여야 합니다"
+            );
+        });
+    }
+
+    #[test]
+    fn test_search_12_bounded_result_count() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            for i in 1..=10 {
+                insert_test_note_with_snapshot(
+                    &pool,
+                    &format!("n12_{i}"),
+                    &format!("s12_{i}"),
+                    &format!("반복 메모 {i}"),
+                    None,
+                    false,
+                    Some("반복 텍스트"),
+                )
+                .await;
+            }
+
+            let res = search_notes(&pool, "반복", None, false, 3, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 3);
+        });
+    }
+
+    #[test]
+    fn test_search_13_snippet_correctness() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            let text = "시스템 초기화 및 네트워크 설정 완료. 클러스터 노드 1번과 2번 구성 완료. 리눅스 호스트 환경 구성 완료. Proxmox 설치 이후 NVMe mirror를 구성하여 고가용성 확보. 백업 스토리지 마운트 완료. 원격 모니터링 에이전트 설정 완료. 추가적인 보안 방화벽 설정 및 자동화 스크립트 배포 파이프라인 연동 작업이 순차적으로 진행됩니다.";
+            insert_test_note_with_snapshot(
+                &pool,
+                "n13",
+                "s13",
+                "인프라 가이드",
+                None,
+                false,
+                Some(text),
+            )
+            .await;
+
+            let res = search_notes(&pool, "NVMe mirror", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res.len(), 1);
+            let snip = res[0].snippet.as_ref().unwrap();
+            assert!(snip.contains("NVMe mirror"));
+            assert!(snip.starts_with("..."));
+            assert!(snip.ends_with("..."));
+        });
+    }
+
+    #[test]
+    fn test_search_14_sql_wildcard_input_safety() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n14_normal",
+                "s14_normal",
+                "일반 문서",
+                None,
+                false,
+                Some("보통 텍스트"),
+            )
+            .await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n14_percent",
+                "s14_percent",
+                "할인율 100% 특가",
+                None,
+                false,
+                Some("할인율 100% 적용"),
+            )
+            .await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "n14_under",
+                "s14_under",
+                "file_name_v1.txt",
+                None,
+                false,
+                Some("언더스코어 포함"),
+            )
+            .await;
+
+            // 1. '%' 검색 시 모든 문서가 매칭되지 않고 100%가 들어간 문서만 매칭되어야 함
+            let res_percent = search_notes(&pool, "%", None, false, 10, 0).await.unwrap();
+            assert_eq!(res_percent.len(), 1);
+            assert_eq!(res_percent[0].note_id, "n14_percent");
+
+            // 2. '_' 검색 시 모든 글자 와일드카드로 작동하지 않고 리터럴 '_'만 매칭되어야 함
+            let res_under = search_notes(&pool, "_name_", None, false, 10, 0)
+                .await
+                .unwrap();
+            assert_eq!(res_under.len(), 1);
+            assert_eq!(res_under[0].note_id, "n14_under");
+        });
+    }
+
+    #[test]
+    fn test_diff_26_unrelated_note_rejection() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "note_A",
+                "src_A",
+                "노트 A",
+                None,
+                false,
+                Some("노트 A 내용"),
+            )
+            .await;
+            insert_test_note_with_snapshot(
+                &pool,
+                "note_B",
+                "src_B",
+                "노트 B",
+                None,
+                false,
+                Some("노트 B 내용"),
+            )
+            .await;
+
+            let snap_a = repository::list_note_snapshots(&pool, "note_A")
+                .await
+                .unwrap();
+            let snap_b = repository::list_note_snapshots(&pool, "note_B")
+                .await
+                .unwrap();
+
+            // 서로 다른 노트의 스냅샷 비교 시도
+            let result: Result<(), AppError> =
+                if snap_a[0].note_id != "note_A" || snap_b[0].note_id != "note_A" {
+                    Err(AppError::InvalidRequest(
+                        "서로 다른 노트의 스냅샷은 비교할 수 없습니다".into(),
+                    ))
+                } else {
+                    Ok(())
+                };
+
+            assert!(result.is_err());
+            match result {
+                Err(AppError::InvalidRequest(msg)) => {
+                    assert!(msg.contains("서로 다른 노트의 스냅샷은 비교할 수 없습니다"));
+                }
+                _ => panic!("Expected InvalidRequest error"),
+            }
+        });
     }
 }

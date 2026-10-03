@@ -7,6 +7,7 @@ import {
   type RescueStatusEvent,
   getStatus,
   listNotes,
+  searchNotes,
   cleanupStale,
   onRescueStatus,
   onSnapshotCreated,
@@ -42,17 +43,42 @@ export function NotepadRescuePage() {
     }
   }, []);
 
-  // Refresh notes list
+  // Refresh notes list (uses hardened backend search query with bounded snippets when searching)
   const refreshNotes = useCallback(async () => {
     try {
-      const data = await listNotes(category, searchQuery);
-      setNotes(data);
-
-      // If currently selected note exists, update its metadata
-      if (selectedNoteIdRef.current) {
-        const updated = data.find((n) => n.id === selectedNoteIdRef.current);
-        if (updated) {
-          setSelectedNote(updated);
+      const q = searchQuery.trim();
+      if (q) {
+        const includeDeleted = category === "all" || category === "deleted";
+        const results = await searchNotes(q, "ALL", includeDeleted);
+        const filtered = results.filter((r) => {
+          if (category === "active") return !r.isDeleted;
+          if (category === "deleted") return r.isDeleted;
+          return true;
+        });
+        const mapped: NoteSummaryDto[] = filtered.map((r) => ({
+          id: r.noteId,
+          sourceId: r.sourceId,
+          displayTitle: r.displayTitle,
+          originalPath: r.originalPath,
+          isSaved: r.isSaved,
+          isDeleted: r.isDeleted,
+          firstSeenAt: r.lastSeenAt,
+          lastSeenAt: r.lastSeenAt,
+          versionCount: r.versionCount,
+          lastSnapshotAt: r.lastSnapshotAt,
+          previewText: r.snippet || null,
+        }));
+        setNotes(mapped);
+        if (selectedNoteIdRef.current) {
+          const updated = mapped.find((n) => n.id === selectedNoteIdRef.current);
+          if (updated) setSelectedNote(updated);
+        }
+      } else {
+        const data = await listNotes(category, "");
+        setNotes(data);
+        if (selectedNoteIdRef.current) {
+          const updated = data.find((n) => n.id === selectedNoteIdRef.current);
+          if (updated) setSelectedNote(updated);
         }
       }
     } catch (e) {

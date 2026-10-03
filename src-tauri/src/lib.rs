@@ -77,14 +77,18 @@ fn open_mini_window(app: &tauri::AppHandle) -> Result<(), AppError> {
         let _ = window.set_focus();
         return Ok(());
     }
-    WebviewWindowBuilder::new(app, "mini", WebviewUrl::App("index.html?window=mini".into()))
-        .title("API Desk Mini")
-        .inner_size(430.0, 720.0)
-        .min_inner_size(340.0, 340.0)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .build()
-        .map_err(|e| AppError::Io(format!("미니 창을 만들 수 없습니다: {e}")))?;
+    WebviewWindowBuilder::new(
+        app,
+        "mini",
+        WebviewUrl::App("index.html?window=mini".into()),
+    )
+    .title("API Desk Mini")
+    .inner_size(430.0, 720.0)
+    .min_inner_size(340.0, 340.0)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|e| AppError::Io(format!("미니 창을 만들 수 없습니다: {e}")))?;
     Ok(())
 }
 
@@ -404,6 +408,8 @@ pub fn run() {
             notepad_rescue::rescue_export_text,
             notepad_rescue::rescue_cleanup_stale,
             notepad_rescue::rescue_open_exported_note,
+            notepad_rescue::rescue_search_notes,
+            notepad_rescue::rescue_diff_snapshots,
         ])
         .build(tauri::generate_context!())
         .expect("error while building API Desk")

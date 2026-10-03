@@ -4,7 +4,7 @@ use sqlx::{Row, SqlitePool};
 
 use super::models::{
     NoteFilter, NoteSummaryDto, NotepadNote, NotepadRescueSettings, NotepadSession,
-    NotepadSnapshot, ParseStatus, SourceType, StorageStatistics,
+    NotepadSnapshot, ParseStatus, SearchResultDto, SourceType, StorageStatistics,
 };
 use crate::error::AppError;
 
@@ -402,6 +402,198 @@ pub async fn list_notes_summary(
     }
 
     Ok(list)
+}
+
+/// LIKE 패턴 이스케이프: %, _, \ 문자를 이스케이프 처리합니다.
+pub fn escape_like_pattern(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 8);
+    for c in input.chars() {
+        if c == '%' || c == '_' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// 텍스트에서 검색어 주변의 제한된 크기 스니펫을 안전하게 추출합니다 (최대 max_chars 문자).
+pub fn extract_snippet(text: &str, query: &str, max_chars: usize) -> Option<String> {
+    let clean_text: String = text
+        .chars()
+        .map(|c| {
+            if c == '\r' || c == '\n' || c == '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    let lower_text = clean_text.to_lowercase();
+    let lower_query = query.to_lowercase();
+
+    let byte_pos = lower_text
+        .find(&lower_query)
+        .or_else(|| clean_text.find(query))?;
+
+    let char_pos = clean_text[..byte_pos].chars().count();
+    let query_chars = query.chars().count();
+    let total_chars = clean_text.chars().count();
+
+    let context_radius = if max_chars > query_chars {
+        (max_chars - query_chars) / 2
+    } else {
+        20
+    };
+
+    let start_char = char_pos.saturating_sub(context_radius);
+    let end_char = (char_pos + query_chars + context_radius).min(total_chars);
+
+    let snippet_raw: String = clean_text
+        .chars()
+        .skip(start_char)
+        .take(end_char - start_char)
+        .collect();
+    let trimmed = snippet_raw.trim();
+
+    let mut result = String::new();
+    if start_char > 0 {
+        result.push_str("...");
+    }
+    result.push_str(trimmed);
+    if end_char < total_chars {
+        result.push_str("...");
+    }
+
+    Some(result)
+}
+
+/// 노트 제목, 경로, 본문 스냅샷을 대상으로 안전하게 검색합니다.
+pub async fn search_notes(
+    pool: &SqlitePool,
+    query: &str,
+    scope: Option<&str>,
+    include_deleted: bool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<SearchResultDto>, AppError> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let bounded_query: String = if trimmed.chars().count() > 200 {
+        trimmed.chars().take(200).collect()
+    } else {
+        trimmed.to_string()
+    };
+
+    let pattern = format!("%{}%", escape_like_pattern(&bounded_query));
+    let normalized_scope = scope.unwrap_or("ALL").trim().to_ascii_uppercase();
+
+    let mut sql = String::from(
+        "SELECT
+            n.id AS note_id,
+            n.source_id,
+            n.display_title,
+            n.original_path,
+            n.is_saved,
+            n.is_deleted,
+            n.last_seen_at,
+            (SELECT COUNT(*) FROM notepad_snapshots s WHERE s.note_id = n.id) AS version_count,
+            (
+                SELECT captured_at FROM notepad_snapshots s
+                WHERE s.note_id = n.id ORDER BY s.captured_at DESC, s.rowid DESC LIMIT 1
+            ) AS last_snapshot_at,
+            CASE
+                WHEN n.display_title LIKE ?1 ESCAPE '\\' THEN 'TITLE'
+                WHEN n.original_path LIKE ?1 ESCAPE '\\' THEN 'PATH'
+                ELSE 'CONTENT'
+            END AS matched_scope,
+            (
+                SELECT recovered_text FROM notepad_snapshots s
+                WHERE s.note_id = n.id AND s.recovered_text LIKE ?1 ESCAPE '\\'
+                ORDER BY s.captured_at DESC, s.rowid DESC LIMIT 1
+            ) AS matching_recovered_text
+         FROM notepad_notes n
+         WHERE 1=1",
+    );
+
+    if !include_deleted {
+        sql.push_str(" AND n.is_deleted = 0");
+    }
+
+    match normalized_scope.as_str() {
+        "TITLE" => {
+            sql.push_str(" AND n.display_title LIKE ?1 ESCAPE '\\'");
+        }
+        "PATH" => {
+            sql.push_str(" AND n.original_path LIKE ?1 ESCAPE '\\'");
+        }
+        "CONTENT" => {
+            sql.push_str(" AND EXISTS (SELECT 1 FROM notepad_snapshots s WHERE s.note_id = n.id AND s.recovered_text LIKE ?1 ESCAPE '\\')");
+        }
+        _ => {
+            sql.push_str(
+                " AND (
+                    n.display_title LIKE ?1 ESCAPE '\\'
+                    OR n.original_path LIKE ?1 ESCAPE '\\'
+                    OR EXISTS (SELECT 1 FROM notepad_snapshots s WHERE s.note_id = n.id AND s.recovered_text LIKE ?1 ESCAPE '\\')
+                )",
+            );
+        }
+    }
+
+    sql.push_str(" ORDER BY n.last_seen_at DESC");
+
+    let bounded_limit = limit.clamp(1, 200);
+    let bounded_offset = offset.max(0);
+    sql.push_str(&format!(
+        " LIMIT {} OFFSET {}",
+        bounded_limit, bounded_offset
+    ));
+
+    let rows = sqlx::query(&sql)
+        .bind(&pattern)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Database(format!("노트 검색 실패: {e}")))?;
+
+    let mut results = Vec::with_capacity(rows.len());
+    for row in rows {
+        let matched_scope: String = row
+            .try_get("matched_scope")
+            .unwrap_or_else(|_| "CONTENT".to_string());
+        let matching_recovered_text: Option<String> = row.try_get("matching_recovered_text").ok();
+        let display_title: String = row.try_get("display_title").unwrap_or_default();
+        let original_path: Option<String> = row.try_get("original_path").ok();
+
+        let snippet = match matched_scope.as_str() {
+            "TITLE" => extract_snippet(&display_title, &bounded_query, 120),
+            "PATH" => original_path
+                .as_deref()
+                .and_then(|p| extract_snippet(p, &bounded_query, 120)),
+            _ => matching_recovered_text
+                .as_deref()
+                .and_then(|t| extract_snippet(t, &bounded_query, 120)),
+        };
+
+        results.push(SearchResultDto {
+            note_id: row.try_get("note_id").unwrap_or_default(),
+            source_id: row.try_get("source_id").unwrap_or_default(),
+            display_title,
+            original_path,
+            is_saved: row.try_get::<i64, _>("is_saved").unwrap_or(0) != 0,
+            is_deleted: row.try_get::<i64, _>("is_deleted").unwrap_or(0) != 0,
+            last_seen_at: row.try_get("last_seen_at").unwrap_or_default(),
+            matched_scope,
+            snippet,
+            version_count: row.try_get("version_count").unwrap_or(0),
+            last_snapshot_at: row.try_get("last_snapshot_at").ok(),
+        });
+    }
+
+    Ok(results)
 }
 
 pub async fn get_note_summary(
