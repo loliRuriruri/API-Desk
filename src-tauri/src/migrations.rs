@@ -26,8 +26,79 @@ pub fn migrations() -> Vec<Migration> {
             kind: MigrationKind::Up,
             sql: MONITOR_SNAPSHOTS,
         },
+        Migration {
+            version: 5,
+            description: "notepad rescue",
+            kind: MigrationKind::Up,
+            sql: NOTEPAD_RESCUE,
+        },
     ]
 }
+
+const NOTEPAD_RESCUE: &str = r#"
+CREATE TABLE notepad_notes (
+    id            TEXT PRIMARY KEY,
+    source_id     TEXT NOT NULL UNIQUE,
+    display_title TEXT NOT NULL,
+    original_path TEXT,
+    is_saved      INTEGER NOT NULL DEFAULT 0,
+    is_deleted    INTEGER NOT NULL DEFAULT 0,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at  TEXT NOT NULL,
+    deleted_at    TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE TABLE notepad_snapshots (
+    id                     TEXT PRIMARY KEY,
+    note_id                TEXT NOT NULL REFERENCES notepad_notes(id) ON DELETE CASCADE,
+    content_hash           TEXT NOT NULL,
+    raw_snapshot_path      TEXT NOT NULL,
+    recovered_text         TEXT,
+    source_type            TEXT NOT NULL,
+    source_filename        TEXT NOT NULL,
+    source_size            INTEGER NOT NULL,
+    parse_status           TEXT NOT NULL,
+    notepad_format_version INTEGER,
+    captured_at            TEXT NOT NULL,
+    created_at             TEXT NOT NULL
+);
+
+CREATE TABLE notepad_sessions (
+    id                TEXT PRIMARY KEY,
+    source_filename   TEXT NOT NULL,
+    content_hash      TEXT NOT NULL,
+    raw_snapshot_path TEXT NOT NULL,
+    captured_at       TEXT NOT NULL,
+    parse_status      TEXT NOT NULL,
+    created_at        TEXT NOT NULL
+);
+
+CREATE TABLE notepad_rescue_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_notepad_notes_source_id ON notepad_notes(source_id);
+CREATE INDEX idx_notepad_notes_is_deleted ON notepad_notes(is_deleted);
+CREATE INDEX idx_notepad_notes_last_seen_at ON notepad_notes(last_seen_at);
+
+CREATE INDEX idx_notepad_snapshots_note_id ON notepad_snapshots(note_id);
+CREATE INDEX idx_notepad_snapshots_content_hash ON notepad_snapshots(content_hash);
+CREATE INDEX idx_notepad_snapshots_captured_at ON notepad_snapshots(captured_at);
+
+CREATE INDEX idx_notepad_sessions_content_hash ON notepad_sessions(content_hash);
+CREATE INDEX idx_notepad_sessions_captured_at ON notepad_sessions(captured_at);
+
+INSERT INTO notepad_rescue_settings (key, value, updated_at) VALUES
+('enabled', 'true', strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+('watch_enabled', 'true', strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+('retention_days', '30', strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+('deleted_retention_days', '30', strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+('max_storage_bytes', '1073741824', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+"#;
 
 const MONITOR_SNAPSHOTS: &str = r#"
 CREATE TABLE monitor_snapshots (

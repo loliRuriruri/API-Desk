@@ -10,6 +10,7 @@ mod local_services;
 mod migrations;
 mod model_import;
 mod monitors;
+pub mod notepad_rescue;
 pub mod process;
 mod resident;
 mod turzx;

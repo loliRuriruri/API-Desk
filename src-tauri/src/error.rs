@@ -21,6 +21,8 @@ pub enum AppError {
     Io(String),
     #[error("네트워크 오류: {0}")]
     Network(String),
+    #[error("데이터베이스 오류: {0}")]
+    Database(String),
 }
 
 impl AppError {
@@ -35,6 +37,7 @@ impl AppError {
             AppError::InvalidRequest(_) => "INVALID_REQUEST",
             AppError::Io(_) => "IO_ERROR",
             AppError::Network(_) => "NETWORK_ERROR",
+            AppError::Database(_) => "DATABASE_ERROR",
         }
     }
 }
@@ -42,6 +45,12 @@ impl AppError {
 impl From<std::io::Error> for AppError {
     fn from(value: std::io::Error) -> Self {
         AppError::Io(value.to_string())
+    }
+}
+
+impl From<sqlx::Error> for AppError {
+    fn from(value: sqlx::Error) -> Self {
+        AppError::Database(value.to_string())
     }
 }
 
