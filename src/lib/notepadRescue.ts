@@ -222,13 +222,19 @@ export interface RescueStatusDto {
 
 export interface AgentProtectionStatusDto {
   isRunning: boolean;
+  agentRunning?: boolean;
   pid?: number | null;
   status: string;
   lastHeartbeatAt?: string | null;
   startupEnabled: boolean;
+  inProcessWatching?: boolean;
   watchPath?: string | null;
   storageRoot?: string | null;
   uptimeSecs?: number | null;
+  provider?: string;
+  isCompatible?: boolean;
+  protocolVersion?: number;
+  statusMessage?: string | null;
 }
 
 export interface RescueStatusEvent {

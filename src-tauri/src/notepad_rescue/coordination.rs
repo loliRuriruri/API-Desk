@@ -9,7 +9,12 @@ pub const GC_MUTEX_NAME: &str = "Local\\ApiDesk_NotepadRescue_GcLock";
 pub const AGENT_STATUS_FILE: &str = "agent_status.json";
 pub const AGENT_STOP_FLAG: &str = "agent_stop.flag";
 pub const AGENT_VERSION: &str = "1.0.0";
+pub const AGENT_PROTOCOL_VERSION: u32 = 1;
 pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(6);
+
+fn default_zero_protocol_version() -> u32 {
+    0
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +28,8 @@ pub struct AgentStatus {
     pub captured_count: usize,
     pub last_captured_at: Option<String>,
     pub provider: String,
+    #[serde(default = "default_zero_protocol_version")]
+    pub protocol_version: u32,
 }
 
 impl Default for AgentStatus {
@@ -37,8 +44,13 @@ impl Default for AgentStatus {
             captured_count: 0,
             last_captured_at: None,
             provider: "background_agent".to_string(),
+            protocol_version: AGENT_PROTOCOL_VERSION,
         }
     }
+}
+
+pub fn is_agent_compatible(status: &AgentStatus) -> bool {
+    status.protocol_version == AGENT_PROTOCOL_VERSION
 }
 
 pub fn now_rfc3339() -> String {
@@ -70,6 +82,11 @@ mod win32 {
             bInitialOwner: i32,
             lpName: *const u16,
         ) -> *mut c_void;
+        pub fn OpenMutexW(
+            dwDesiredAccess: u32,
+            bInheritHandle: i32,
+            lpName: *const u16,
+        ) -> *mut c_void;
         pub fn WaitForSingleObject(hHandle: *mut c_void, dwMilliseconds: u32) -> u32;
         pub fn ReleaseMutex(hMutex: *mut c_void) -> i32;
         pub fn CloseHandle(hObject: *mut c_void) -> i32;
@@ -80,6 +97,7 @@ mod win32 {
     pub const WAIT_ABANDONED: u32 = 0x0000_0080;
     pub const WAIT_TIMEOUT: u32 = 0x0000_0102;
     pub const ERROR_ALREADY_EXISTS: u32 = 183;
+    pub const SYNCHRONIZE: u32 = 0x0010_0000;
     pub const INFINITE: u32 = 0xFFFF_FFFF;
 }
 
@@ -172,6 +190,31 @@ impl Drop for AgentInstanceLock {
         if let Some(ref path) = self._lock_path {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// Win32 Named Mutex 소유 여부를 비파괴적으로 확인하여 에이전트 인스턴스 실행 상태를 검사합니다.
+/// 하트비트 파일보다 우선하는 단일 작성자(Single Writer) 캡처 권한의 절대 기준입니다.
+pub fn is_agent_instance_running(storage_root: &Path) -> bool {
+    is_agent_instance_running_named(storage_root, AGENT_MUTEX_NAME)
+}
+
+/// 지정된 이름의 Named Mutex 소유 여부를 확인합니다 (테스트 격리 지원).
+pub fn is_agent_instance_running_named(_storage_root: &Path, lock_name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let wide_name: Vec<u16> = lock_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe { win32::OpenMutexW(win32::SYNCHRONIZE, 0, wide_name.as_ptr()) };
+        if handle.is_null() {
+            return false;
+        }
+        unsafe { win32::CloseHandle(handle) };
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        let lock_path = _storage_root.join(format!("{lock_name}.lock"));
+        lock_path.exists()
     }
 }
 
@@ -343,7 +386,7 @@ pub fn is_agent_alive(storage_root: &Path) -> bool {
     true
 }
 
-fn chrono_parse_rfc3339(s: &str) -> Result<u64, ()> {
+pub fn chrono_parse_rfc3339(s: &str) -> Result<u64, ()> {
     // 간단한 ISO 8601 / RFC 3339 파싱
     let parts: Vec<&str> = s.split('T').collect();
     if parts.len() != 2 {
@@ -503,5 +546,28 @@ pub fn default_agent_executable_path() -> Result<PathBuf, AppError> {
     };
 
     let target = parent.join(agent_name);
+    if target.is_file() {
+        return Ok(target);
+    }
+    let res_target = parent.join("resources").join(agent_name);
+    if res_target.is_file() {
+        return Ok(res_target);
+    }
+
+    // 개발 환경(Cargo workspace / target/debug, target/release) 탐색
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidates = [
+            cwd.join("src-tauri").join("target").join("debug").join(agent_name),
+            cwd.join("src-tauri").join("target").join("release").join(agent_name),
+            cwd.join("target").join("debug").join(agent_name),
+            cwd.join("target").join("release").join(agent_name),
+        ];
+        for c in candidates {
+            if c.is_file() {
+                return Ok(c);
+            }
+        }
+    }
+
     Ok(target)
 }

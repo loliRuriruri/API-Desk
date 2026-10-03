@@ -56,11 +56,11 @@ async fn async_main() {
     }
 
     if args.iter().any(|a| a == "--status") {
-        if is_agent_alive(&storage_root) {
+        if is_agent_instance_running(&storage_root) {
             if let Ok(Some(s)) = read_heartbeat(&storage_root) {
                 println!(
-                    "Notepad Rescue Agent: RUNNING (PID: {}, Uptime since: {})",
-                    s.pid, s.started_at
+                    "Notepad Rescue Agent: RUNNING (PID: {}, Protocol: {}, Uptime since: {})",
+                    s.pid, s.protocol_version, s.started_at
                 );
             } else {
                 println!("Notepad Rescue Agent: RUNNING");
@@ -106,7 +106,8 @@ async fn async_main() {
         }
     };
 
-    // 3. 설정 확인
+    // 3. 스키마 검증 및 설정 확인
+    let _ = repository::ensure_schema(&pool).await;
     let settings = repository::get_settings(&pool).await.unwrap_or_default();
     if !settings.enabled || !settings.watch_enabled {
         eprintln!("Notepad Rescue is disabled in settings. Agent exiting.");
@@ -158,6 +159,7 @@ async fn async_main() {
         captured_count: initial_scanned,
         last_captured_at: None,
         provider: "background_agent".to_string(),
+        protocol_version: AGENT_PROTOCOL_VERSION,
     };
     let _ = write_heartbeat(&storage_root, &status);
 

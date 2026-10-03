@@ -134,26 +134,72 @@ pub fn start_worker(app: &tauri::AppHandle) {
         };
         let _ = ensure_storage_dirs(&store_root);
 
-        // 1. 백그라운드 에이전트 생존 여부 확인 (Single Writer 원칙)
-        if coordination::is_agent_alive(&store_root) {
+        // 1. 백그라운드 에이전트 소유권 및 프로토콜 호환성 확인 (Single Writer 절대 권한)
+        if coordination::is_agent_instance_running(&store_root) {
+            let hb = coordination::read_heartbeat(&store_root).ok().flatten();
+            let is_alive = coordination::is_agent_alive(&store_root);
+            let is_compatible = hb
+                .as_ref()
+                .map(|s| coordination::is_agent_compatible(s))
+                .unwrap_or(true);
+
             let rescue_state = handle.state::<NotepadRescueState>();
-            rescue_state.is_watching.store(true, Ordering::Relaxed);
             *rescue_state.provider.lock().await = "background_agent".to_string();
-            crate::resident::log(
-                &handle,
-                "notepad_rescue",
-                "background agent active; in-process watcher standby",
-            );
-            let _ = handle.emit(
-                "rescue://status",
-                &RescueStatusEvent {
-                    enabled: true,
-                    watch_enabled: true,
-                    is_watching: true,
-                    status: "ACTIVE".to_string(),
-                    message: Some("Background Agent 활성 보호 중".to_string()),
-                },
-            );
+
+            if !is_compatible {
+                rescue_state.is_watching.store(false, Ordering::Relaxed);
+                crate::resident::log(
+                    &handle,
+                    "notepad_rescue",
+                    "background agent protocol incompatible; update required",
+                );
+                let _ = handle.emit(
+                    "rescue://status",
+                    &RescueStatusEvent {
+                        enabled: true,
+                        watch_enabled: true,
+                        is_watching: false,
+                        status: "UPDATE_REQUIRED".to_string(),
+                        message: Some("Background Agent update required".to_string()),
+                    },
+                );
+                return;
+            }
+
+            rescue_state.is_watching.store(true, Ordering::Relaxed);
+            if is_alive {
+                crate::resident::log(
+                    &handle,
+                    "notepad_rescue",
+                    "background agent active; in-process watcher standby",
+                );
+                let _ = handle.emit(
+                    "rescue://status",
+                    &RescueStatusEvent {
+                        enabled: true,
+                        watch_enabled: true,
+                        is_watching: true,
+                        status: "ACTIVE".to_string(),
+                        message: Some("Background Agent 활성 보호 중".to_string()),
+                    },
+                );
+            } else {
+                crate::resident::log(
+                    &handle,
+                    "notepad_rescue",
+                    "background agent heartbeat stale (ownership retained); in-process watcher standby",
+                );
+                let _ = handle.emit(
+                    "rescue://status",
+                    &RescueStatusEvent {
+                        enabled: true,
+                        watch_enabled: true,
+                        is_watching: true,
+                        status: "DEGRADED".to_string(),
+                        message: Some("Background Agent 하트비트 지연 (보호 소유권 유지 중)".to_string()),
+                    },
+                );
+            }
             return;
         }
 

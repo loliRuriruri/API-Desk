@@ -15,6 +15,64 @@ const KEY_RETENTION_DAYS: &str = "retention_days";
 const KEY_DELETED_RETENTION_DAYS: &str = "deleted_retention_days";
 const KEY_MAX_STORAGE_BYTES: &str = "max_storage_bytes";
 
+/// 백그라운드 에이전트 독립 기동 시 필요 테이블이 없을 경우 안전하게 생성합니다.
+pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), AppError> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS notepad_notes (
+            id            TEXT PRIMARY KEY,
+            source_id     TEXT NOT NULL UNIQUE,
+            display_title TEXT NOT NULL,
+            original_path TEXT,
+            is_saved      INTEGER NOT NULL DEFAULT 0,
+            is_deleted    INTEGER NOT NULL DEFAULT 0,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at  TEXT NOT NULL,
+            deleted_at    TEXT,
+            created_at    TEXT NOT NULL,
+            updated_at    TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS notepad_snapshots (
+            id                     TEXT PRIMARY KEY,
+            note_id                TEXT NOT NULL REFERENCES notepad_notes(id) ON DELETE CASCADE,
+            content_hash           TEXT NOT NULL,
+            raw_snapshot_path      TEXT NOT NULL,
+            recovered_text         TEXT,
+            source_type            TEXT NOT NULL,
+            source_filename        TEXT NOT NULL,
+            source_size            INTEGER NOT NULL,
+            parse_status           TEXT NOT NULL,
+            notepad_format_version INTEGER,
+            captured_at            TEXT NOT NULL,
+            created_at             TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS notepad_sessions (
+            id                TEXT PRIMARY KEY,
+            source_filename   TEXT NOT NULL,
+            content_hash      TEXT NOT NULL,
+            raw_snapshot_path TEXT NOT NULL,
+            captured_at       TEXT NOT NULL,
+            parse_status      TEXT NOT NULL,
+            created_at        TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS notepad_rescue_settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO notepad_rescue_settings (key, value, updated_at) VALUES
+        ('enabled', 'true', '2026-01-01T00:00:00Z'),
+        ('watch_enabled', 'true', '2026-01-01T00:00:00Z'),
+        ('retention_days', '30', '2026-01-01T00:00:00Z'),
+        ('deleted_retention_days', '30', '2026-01-01T00:00:00Z'),
+        ('max_storage_bytes', '1073741824', '2026-01-01T00:00:00Z');",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Database(format!("스키마 생성/검증 실패: {e}")))?;
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------- Settings
 
 pub async fn get_settings(pool: &SqlitePool) -> Result<NotepadRescueSettings, AppError> {

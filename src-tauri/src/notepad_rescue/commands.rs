@@ -521,25 +521,65 @@ pub async fn rescue_get_agent_status(
     state: State<'_, NotepadRescueState>,
 ) -> Result<super::models::AgentProtectionStatusDto, AppError> {
     let store_root = super::storage_root(&app)?;
+    let agent_running = super::coordination::is_agent_instance_running(&store_root);
     let agent_alive = super::coordination::is_agent_alive(&store_root);
     let agent_status = super::coordination::read_heartbeat(&store_root).unwrap_or(None);
     let startup_enabled = super::coordination::is_startup_enabled();
     let in_process_watching = state.is_watching.load(Ordering::Relaxed);
 
-    let provider = if agent_alive {
-        "background_agent".to_string()
+    let is_compatible = agent_status
+        .as_ref()
+        .map(|s| super::coordination::is_agent_compatible(s))
+        .unwrap_or(true);
+
+    let (provider, status_str, status_msg) = if agent_running {
+        if !is_compatible {
+            (
+                "background_agent".to_string(),
+                "UPDATE_REQUIRED".to_string(),
+                Some("Background Agent update required".to_string()),
+            )
+        } else if agent_alive {
+            ("background_agent".to_string(), "RUNNING".to_string(), None)
+        } else {
+            (
+                "background_agent".to_string(),
+                "DEGRADED".to_string(),
+                Some("하트비트 지연 (보호 소유권 유지 중)".to_string()),
+            )
+        }
     } else if in_process_watching {
-        "in_process_fallback".to_string()
+        ("in_process_fallback".to_string(), "RUNNING".to_string(), None)
     } else {
-        "none".to_string()
+        ("none".to_string(), "STOPPED".to_string(), None)
     };
 
+    let pid = agent_status.as_ref().map(|s| s.pid);
+    let uptime_secs = agent_status.as_ref().and_then(|s| {
+        super::coordination::chrono_parse_rfc3339(&s.started_at)
+            .ok()
+            .map(|start| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                now.saturating_sub(start)
+            })
+    });
+
     Ok(super::models::AgentProtectionStatusDto {
-        agent_running: agent_alive,
+        agent_running,
+        is_running: agent_running,
+        pid,
+        status: status_str,
+        uptime_secs,
         provider,
         agent_status,
         startup_enabled,
         in_process_watching,
+        is_compatible,
+        protocol_version: super::coordination::AGENT_PROTOCOL_VERSION,
+        status_message: status_msg,
     })
 }
 
@@ -550,7 +590,7 @@ pub async fn rescue_start_agent(
     state: State<'_, NotepadRescueState>,
 ) -> Result<super::models::AgentProtectionStatusDto, AppError> {
     let store_root = super::storage_root(&app)?;
-    if super::coordination::is_agent_alive(&store_root) {
+    if super::coordination::is_agent_instance_running(&store_root) {
         return rescue_get_agent_status(app, state).await;
     }
 
@@ -568,15 +608,15 @@ pub async fn rescue_start_agent(
         .spawn()
         .map_err(|e| AppError::Io(format!("에이전트 프로세스 시작 실패: {e}")))?;
 
-    // 하트비트가 활성화될 때까지 대기
+    // 에이전트 인스턴스 락 및 하트비트가 활성화될 때까지 대기
     for _ in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if super::coordination::is_agent_alive(&store_root) {
+        if super::coordination::is_agent_instance_running(&store_root) {
             break;
         }
     }
 
-    if super::coordination::is_agent_alive(&store_root) {
+    if super::coordination::is_agent_instance_running(&store_root) {
         super::stop_in_process_watcher(&app).await;
     }
 

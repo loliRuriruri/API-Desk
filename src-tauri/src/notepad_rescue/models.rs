@@ -274,10 +274,17 @@ pub struct RescueStatusDto {
 #[serde(rename_all = "camelCase")]
 pub struct AgentProtectionStatusDto {
     pub agent_running: bool,
+    pub is_running: bool,
+    pub pid: Option<u32>,
+    pub status: String,
+    pub uptime_secs: Option<u64>,
     pub provider: String,
     pub agent_status: Option<super::coordination::AgentStatus>,
     pub startup_enabled: bool,
     pub in_process_watching: bool,
+    pub is_compatible: bool,
+    pub protocol_version: u32,
+    pub status_message: Option<String>,
 }
 
 /// 프런트엔드 설정 변경 DTO.

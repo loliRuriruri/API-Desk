@@ -546,8 +546,12 @@ export function RescueSettings({
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <strong>독립 백그라운드 보호 에이전트</strong>
-                {agentStatus?.isRunning ? (
-                  <Badge tone="ok">실행 중 (PID: {agentStatus.pid})</Badge>
+                {agentStatus?.isCompatible === false ? (
+                  <Badge tone="danger">업데이트 필요</Badge>
+                ) : agentStatus?.isRunning ? (
+                  <Badge tone={agentStatus.status === "DEGRADED" ? "warn" : "ok"}>
+                    {agentStatus.status === "DEGRADED" ? "하트비트 지연 (보호 유지)" : `실행 중 (PID: ${agentStatus.pid})`}
+                  </Badge>
                 ) : (
                   <Badge tone="muted">중지됨</Badge>
                 )}
@@ -587,6 +591,23 @@ export function RescueSettings({
                 )}
               </div>
             </div>
+
+            {agentStatus?.isCompatible === false && (
+              <div
+                style={{
+                  margin: "0 0 10px 0",
+                  padding: "8px 12px",
+                  background: "rgba(239, 68, 68, 0.15)",
+                  border: "1px solid rgba(239, 68, 68, 0.4)",
+                  borderRadius: "6px",
+                  fontSize: "0.85rem",
+                  color: "#ef4444",
+                  fontWeight: 600,
+                }}
+              >
+                ⚠️ Background Agent update required (프로토콜 버전 불일치로 안전 모드 대기 중)
+              </div>
+            )}
 
             <p style={{ margin: "0 0 10px 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>
               API Desk 메인 창이 닫혀도 백그라운드에서 메모장을 24/7 지속 감시하고 백업합니다.

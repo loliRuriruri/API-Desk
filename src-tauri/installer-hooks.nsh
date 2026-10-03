@@ -1,4 +1,4 @@
-﻿; ============================================================
+; ============================================================
 ;  API Desk 설치 프로그램 - 한글 소개/안내 문구 (NSIS_HOOK text overrides)
 ;  이 파일의 !define 들은 installer.nsi 가 각 페이지를 만들기 전에 적용됩니다.
 ; ============================================================
@@ -11,3 +11,17 @@
 !define MUI_FINISHPAGE_TITLE "API Desk 설치가 완료되었습니다"
 !define MUI_FINISHPAGE_TEXT "API Desk가 설치되었습니다.$\r$\n$\r$\n  -  처음 실행하면 마스터 비밀번호로 볼트를 만들어 API 키를 저장합니다.$\r$\n  -  트레이 아이콘 왼쪽 클릭 = 미니 창, 우클릭 = 열기 · 사용량 새로고침 · 종료$\r$\n  -  기존 API 키와 설정은 재설치해도 그대로 유지됩니다.$\r$\n$\r$\n아래 'API Desk 실행'을 체크하면 설치 직후 바로 시작합니다."
 !define MUI_FINISHPAGE_RUN_TEXT "API Desk 실행"
+
+; ============================================================
+;  Notepad Rescue Agent 설치/제거 훅
+; ============================================================
+!define CUSTOM_INSTALL
+!macro customInstall
+  IfFileExists "$EXEDIR\notepad-rescue-agent.exe" 0 +2
+    CopyFiles /SILENT "$EXEDIR\notepad-rescue-agent.exe" "$INSTDIR\notepad-rescue-agent.exe"
+!macroend
+
+!define CUSTOM_UNINSTALL
+!macro customUninstall
+  Delete "$INSTDIR\notepad-rescue-agent.exe"
+!macroend

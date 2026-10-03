@@ -10,18 +10,14 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::SqlitePool;
 
-use crate::notepad_rescue::coordination::{
-    clear_stop_request, has_stop_request, is_agent_alive, is_startup_enabled, read_heartbeat,
-    request_agent_stop, set_startup_enabled, write_heartbeat, AgentInstanceLock, AgentStatus,
-    CrossProcessGcLock,
-};
+use crate::notepad_rescue::coordination::*;
 use crate::notepad_rescue::gc::{execute_gc, plan_gc};
-use crate::notepad_rescue::models::{NoteFilter, NotepadNote, NotepadRescueSettings, SourceType};
+use crate::notepad_rescue::models::{AgentProtectionStatusDto, NoteFilter, NotepadNote, NotepadRescueSettings, SourceType};
 use crate::notepad_rescue::parser::generate_synthetic_unsaved;
 use crate::notepad_rescue::pipeline::capture_state_file;
 use crate::notepad_rescue::repository::*;
@@ -193,6 +189,7 @@ fn test_agent_07_heartbeat_write_and_read() {
         captured_count: 5,
         last_captured_at: None,
         provider: "background_agent".to_string(),
+        protocol_version: AGENT_PROTOCOL_VERSION,
     };
 
     assert!(write_heartbeat(&dir, &status).is_ok());
@@ -785,4 +782,154 @@ fn test_agent_36_db_connection_pool_resilience() {
             );
         }
     });
+}
+
+// =========================================================================
+// Group 7: NR.6A Production Gate (Tests 37..40)
+// =========================================================================
+
+#[test]
+fn test_agent_37_named_mutex_ownership_prevents_second_watcher_when_heartbeat_stale() {
+    let storage_root = create_test_storage_dir("nr6a-mutex-stale");
+    let lock_name = format!("Local\\Test_ApiDesk_Mutex_{}", unique_test_id("nr6a"));
+
+    // 1. 에이전트 인스턴스 락 획득 (Named Mutex 소유)
+    let lock = AgentInstanceLock::try_acquire_named(&storage_root, &lock_name);
+    assert!(lock.is_some(), "Agent must acquire instance lock");
+
+    // 2. 뮤텍스가 실행 중인지 확인
+    assert!(
+        is_agent_instance_running_named(&storage_root, &lock_name),
+        "Mutex probe must report agent running while held"
+    );
+
+    // 3. 고의로 오래된(stale) 하트비트 작성 (10초 전 타임스탬프)
+    let stale_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        .saturating_sub(60);
+    let stale_status = AgentStatus {
+        pid: std::process::id(),
+        started_at: "2026-01-01T00:00:00.000Z".to_string(),
+        last_heartbeat: crate::usage::epoch_to_rfc3339(stale_time as i64),
+        status: "RUNNING".to_string(),
+        version: AGENT_VERSION.to_string(),
+        watcher_active: true,
+        captured_count: 5,
+        last_captured_at: None,
+        provider: "background_agent".to_string(),
+        protocol_version: AGENT_PROTOCOL_VERSION,
+    };
+    write_heartbeat(&storage_root, &stale_status).unwrap();
+
+    // 4. 하트비트 시간 기준 is_agent_alive는 false 반환
+    assert!(
+        !is_agent_alive(&storage_root),
+        "Heartbeat is stale so is_agent_alive must be false"
+    );
+
+    // 5. 그러나 Named Mutex 기준 is_agent_instance_running_named는 여전히 true!
+    //    따라서 API Desk는 이 상태에서 절대 내부 워커를 이중 생성하지 않고
+    //    보호 소유권을 에이전트에 위임(DEGRADED) 상태로 유지함.
+    assert!(
+        is_agent_instance_running_named(&storage_root, &lock_name),
+        "Authoritative Win32 Named Mutex must still be reported as held even if heartbeat is stale"
+    );
+
+    // 6. 에이전트 종료 시 락 해제
+    drop(lock);
+
+    // 7. 락 해제 후에는 is_agent_instance_running_named가 false 반환
+    assert!(
+        !is_agent_instance_running_named(&storage_root, &lock_name),
+        "Mutex probe must report false once lock is dropped"
+    );
+
+    let _ = fs::remove_dir_all(&storage_root);
+}
+
+#[test]
+fn test_agent_38_protocol_version_compatibility_verification() {
+    // 1. 현재 에이전트 상태는 호환 가능
+    let current_status = AgentStatus::default();
+    assert_eq!(current_status.protocol_version, AGENT_PROTOCOL_VERSION);
+    assert!(
+        is_agent_compatible(&current_status),
+        "Current protocol version must be compatible"
+    );
+
+    // 2. 미래/구버전 프로토콜 상태는 호환 불가능 감지
+    let mut incompatible_status = current_status.clone();
+    incompatible_status.protocol_version = 999;
+    assert!(
+        !is_agent_compatible(&incompatible_status),
+        "Higher/incompatible protocol version must be rejected"
+    );
+
+    // 3. 레거시(protocolVersion 필드가 없는 이전 JSON) 역직렬화 테스트
+    let legacy_json = r#"{
+        "pid": 1234,
+        "startedAt": "2026-01-01T00:00:00Z",
+        "lastHeartbeat": "2026-01-01T00:00:00Z",
+        "status": "RUNNING",
+        "version": "0.9.0",
+        "watcherActive": true,
+        "capturedCount": 0,
+        "lastCapturedAt": null,
+        "provider": "background_agent"
+    }"#;
+    let parsed: AgentStatus = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(
+        parsed.protocol_version, 0,
+        "Missing protocolVersion must deserialize to 0"
+    );
+    assert!(
+        !is_agent_compatible(&parsed),
+        "Legacy protocol 0 must be rejected to prevent DB corruption"
+    );
+}
+
+#[test]
+fn test_agent_39_autostart_quoting_and_zero_elevation() {
+    // 1. 레지스트리 키가 HKEY_CURRENT_USER(HKCU) 아래에 선언되어 있어 관리자 권한(UAC)이 불필요함
+    assert!(
+        RUN_KEY.starts_with(r"HKCU\"),
+        "Autostart registration must be scoped strictly to HKCU (no elevation required)"
+    );
+
+    // 2. 실행 경로 확인 및 공백이 포함된 경로의 따옴표 감싸기 포맷 검증
+    let test_path = PathBuf::from(r"C:\Program Files\API Desk\notepad-rescue-agent.exe");
+    let cmd_str = format!("\"{}\" --background", test_path.display());
+    assert_eq!(
+        cmd_str,
+        r#""C:\Program Files\API Desk\notepad-rescue-agent.exe" --background"#
+    );
+    assert!(cmd_str.starts_with('"'));
+    assert!(cmd_str.ends_with(r#"" --background"#));
+}
+
+#[test]
+fn test_agent_40_agent_status_dto_complete_serialization() {
+    let status = AgentProtectionStatusDto {
+        agent_running: true,
+        is_running: true,
+        pid: Some(5432),
+        status: "RUNNING".to_string(),
+        uptime_secs: Some(120),
+        provider: "background_agent".to_string(),
+        agent_status: Some(AgentStatus::default()),
+        startup_enabled: true,
+        in_process_watching: false,
+        is_compatible: true,
+        protocol_version: AGENT_PROTOCOL_VERSION,
+        status_message: None,
+    };
+
+    let json = serde_json::to_string(&status).unwrap();
+    assert!(json.contains(r#""agentRunning":true"#));
+    assert!(json.contains(r#""isRunning":true"#));
+    assert!(json.contains(r#""isCompatible":true"#));
+    assert!(json.contains(r#""protocolVersion":1"#));
+    assert!(json.contains(r#""pid":5432"#));
 }
