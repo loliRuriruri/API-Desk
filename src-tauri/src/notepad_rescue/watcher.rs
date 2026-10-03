@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sqlx::SqlitePool;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 use super::models::SourceType;
 use super::pipeline::{capture_state_file, handle_file_removed};
@@ -215,7 +215,7 @@ pub async fn start_notepad_watcher(
                             continue;
                         }
 
-                        let mut map = tauri::async_runtime::block_on(pending_clone.lock());
+                        let mut map = pending_clone.lock().unwrap_or_else(|e| e.into_inner());
                         // Trailing-edge coalescing: 동일 파일에 대해 반복 이벤트가 들어오면 마감 시각을 연장함
                         map.insert(
                             path,
@@ -245,7 +245,7 @@ pub async fn start_notepad_watcher(
             let mut expired = Vec::new();
 
             {
-                let mut map = pending_dispatch.lock().await;
+                let mut map = pending_dispatch.lock().unwrap_or_else(|e| e.into_inner());
                 let keys: Vec<PathBuf> = map.keys().cloned().collect();
                 for key in keys {
                     if let Some(entry) = map.get(&key) {

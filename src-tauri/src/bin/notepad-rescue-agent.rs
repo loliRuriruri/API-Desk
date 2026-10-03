@@ -41,6 +41,13 @@ fn resolve_db_path() -> PathBuf {
 }
 
 fn main() {
+    let storage_root = resolve_storage_root();
+    let root_clone = storage_root.clone();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!("PANIC: {info}\n");
+        let _ = std::fs::create_dir_all(&root_clone);
+        let _ = std::fs::write(root_clone.join("crash.log"), msg);
+    }));
     tauri::async_runtime::block_on(async_main());
 }
 
