@@ -662,21 +662,11 @@ pub fn parse_grok_build_billing(body: &Value) -> MonitorOutcome {
     }
 }
 
-fn hidden_command(program: &PathBuf) -> std::process::Command {
-    let mut command = std::process::Command::new(program);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    command
-}
-
 fn run_grok_build_billing(timeout_ms: u64) -> Option<Value> {
     use std::io::{BufRead, BufReader, Write};
 
     let cli = grok_cli_path()?;
-    let mut child = hidden_command(&cli)
+    let mut child = crate::process::hidden_command(&cli)
         .args(["agent", "stdio"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -1349,14 +1339,20 @@ fn powershell_encoded(script: &str) -> String {
 
 fn run_powershell(script: &str) -> Result<String, AppError> {
     let encoded = powershell_encoded(script);
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            &encoded,
-        ])
+    #[cfg(windows)]
+    let program = "powershell.exe";
+    #[cfg(not(windows))]
+    let program = "powershell";
+    let mut command = crate::process::hidden_command(program);
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+        &encoded,
+    ]);
+    let output = command
         .output()
         .map_err(|e| AppError::Io(format!("PowerShell 실행 실패: {e}")))?;
     if !output.status.success() {

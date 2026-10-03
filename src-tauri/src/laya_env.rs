@@ -7,7 +7,7 @@
 //! - 로그/에러에 시크릿(토큰/키)을 남기지 않는다.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -498,9 +498,8 @@ pub fn sanitize(text: &str) -> String {
 }
 
 fn run_hidden(program: &str, args: &[&str]) -> Result<std::process::Output, AppError> {
-    Command::new(program)
+    crate::process::hidden_command(program)
         .args(args)
-        .creation_flags_hidden()
         .stdin(Stdio::null())
         .output()
         .map_err(|error| AppError::Io(format!("{program} 실행 실패: {}", sanitize(&error.to_string()))))
@@ -1107,8 +1106,8 @@ fn run_plan(
             }
             continue;
         }
-        let mut command = Command::new(&step.program);
-        command.args(&step.args).creation_flags_hidden().stdin(Stdio::null());
+        let mut command = crate::process::hidden_command(&step.program);
+        command.args(&step.args).stdin(Stdio::null());
         for (key, value) in env_vars {
             command.env(key, value);
         }
@@ -1147,10 +1146,9 @@ fn probe_candidate_server(
     env_vars: &[(String, String)],
 ) -> Result<Value, AppError> {
     let port = 8123u16;
-    let mut command = Command::new(&step.program);
+    let mut command = crate::process::hidden_command(&step.program);
     command
         .args(&step.args)
-        .creation_flags_hidden()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -1532,10 +1530,9 @@ pub async fn laya_env_benchmark(app: AppHandle, env_path: Option<String>, iterat
 fn run_benchmark(app: &AppHandle, executable: &Path, iterations: u32) -> Result<LayaBenchmark, AppError> {
     let request = env_path_request(app);
     let _ = request;
-    let mut command = Command::new(executable);
+    let mut command = crate::process::hidden_command(executable);
     command
         .args(["-c", BENCH_SCRIPT])
-        .creation_flags_hidden()
         .stdin(Stdio::null())
         .env("LAYA_DEVICE", "cuda")
         .env("LAYA_FAST", "1")
@@ -1578,31 +1575,6 @@ fn run_benchmark(app: &AppHandle, executable: &Path, iterations: u32) -> Result<
 }
 
 fn env_path_request(_app: &AppHandle) {}
-
-#[cfg(windows)]
-trait HiddenCommand {
-    fn creation_flags_hidden(&mut self) -> &mut Self;
-}
-
-#[cfg(windows)]
-impl HiddenCommand for Command {
-    fn creation_flags_hidden(&mut self) -> &mut Self {
-        use std::os::windows::process::CommandExt;
-        self.creation_flags(0x0800_0000)
-    }
-}
-
-#[cfg(not(windows))]
-trait HiddenCommand {
-    fn creation_flags_hidden(&mut self) -> &mut Self;
-}
-
-#[cfg(not(windows))]
-impl HiddenCommand for Command {
-    fn creation_flags_hidden(&mut self) -> &mut Self {
-        self
-    }
-}
 
 #[cfg(test)]
 mod tests {

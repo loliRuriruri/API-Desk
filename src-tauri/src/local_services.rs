@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -412,9 +412,8 @@ pub fn port_owner(port: u16) -> Option<u32> {
 }
 
 fn port_owner_pid(port: u16) -> Option<u32> {
-    let output = Command::new("netstat")
+    let output = crate::process::hidden_command("netstat")
         .args(["-ano", "-p", "tcp"])
-        .creation_flags_no_window()
         .output()
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
@@ -518,27 +517,9 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     });
 }
 
-trait NoWindow {
-    fn creation_flags_no_window(&mut self) -> &mut Self;
-}
-
-impl NoWindow for Command {
-    #[cfg(windows)]
-    fn creation_flags_no_window(&mut self) -> &mut Self {
-        use std::os::windows::process::CommandExt;
-        self.creation_flags(0x0800_0000)
-    }
-
-    #[cfg(not(windows))]
-    fn creation_flags_no_window(&mut self) -> &mut Self {
-        self
-    }
-}
-
 fn kill_tree(pid: u32) {
-    let _ = Command::new("taskkill")
+    let _ = crate::process::hidden_command("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .creation_flags_no_window()
         .output();
 }
 
@@ -858,7 +839,7 @@ fn start_service(
         return Err(AppError::InvalidRequest(reason));
     }
 
-    let mut command = Command::new(&config.executable);
+    let mut command = crate::process::hidden_command(&config.executable);
     command
         .args(&config.args)
         .stdin(Stdio::null())
@@ -870,7 +851,6 @@ fn start_service(
     for (key, value) in service_env(&def, &config, secret.as_deref()) {
         command.env(key, value);
     }
-    command.creation_flags_no_window();
 
     state.push_log(
         &id,

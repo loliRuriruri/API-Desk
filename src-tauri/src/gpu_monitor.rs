@@ -15,7 +15,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -244,9 +243,8 @@ mod nvml {
 // ---------------------------------------------------------------- nvidia-smi fallback
 
 fn smi_query(args: &[&str]) -> Option<String> {
-    let output = Command::new("nvidia-smi")
+    let output = crate::process::hidden_command("nvidia-smi")
         .args(args)
-        .creation_flags_hidden()
         .output()
         .ok()?;
     if !output.status.success() {
@@ -985,9 +983,8 @@ pub(crate) fn resolve_process(
 // ---------------------------------------------------------------- ollama / laya health
 
 fn ollama_models() -> Vec<String> {
-    let mut child = match Command::new("ollama")
+    let mut child = match crate::process::hidden_command("ollama")
         .args(["ps"])
-        .creation_flags_hidden()
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -2064,30 +2061,5 @@ mod tests {
         });
         let order: Vec<u32> = processes.into_iter().map(|entry| entry.0).collect();
         assert_eq!(order, vec![3, 2, 1, 4], "GPU% → VRAM → PID 순서");
-    }
-}
-
-#[cfg(windows)]
-trait HiddenCommand {
-    fn creation_flags_hidden(&mut self) -> &mut Self;
-}
-
-#[cfg(windows)]
-impl HiddenCommand for Command {
-    fn creation_flags_hidden(&mut self) -> &mut Self {
-        use std::os::windows::process::CommandExt;
-        self.creation_flags(0x0800_0000)
-    }
-}
-
-#[cfg(not(windows))]
-trait HiddenCommand {
-    fn creation_flags_hidden(&mut self) -> &mut Self;
-}
-
-#[cfg(not(windows))]
-impl HiddenCommand for Command {
-    fn creation_flags_hidden(&mut self) -> &mut Self {
-        self
     }
 }

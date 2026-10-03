@@ -163,8 +163,34 @@ pub fn log(app: &AppHandle, tag: &str, message: &str) {
             use std::io::Write;
             let _ = writeln!(file, "{line}");
         }
+    } else {
+        append_to_resident_log(&line);
     }
     let _ = app.emit("resident-log", line);
+}
+
+/// AppHandle 없이도 디스크 resident.log에 직접 한 줄을 추가한다 (Windows APPDATA fallback).
+pub fn append_to_resident_log(line: &str) {
+    #[cfg(windows)]
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = std::path::PathBuf::from(appdata).join("com.apidesk.desktop");
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("resident.log"))
+        {
+            use std::io::Write;
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// 백그라운드 자식 프로세스 추적 로그 ([child] <exe> hidden). 시크릿/인자 제외.
+pub fn log_child_process(exe_name: &str) {
+    let now = crate::usage::epoch_to_rfc3339(now_secs());
+    let line = format!("[{now}] [child] {exe_name} hidden");
+    append_to_resident_log(&line);
 }
 
 /// 백엔드 세션 시작 경계 로그(스펙 §13: session start pid=... build=...).
