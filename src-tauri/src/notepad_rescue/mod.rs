@@ -12,6 +12,8 @@ pub mod snapshot;
 pub mod watcher;
 
 #[cfg(test)]
+pub mod agent_tests;
+#[cfg(test)]
 pub mod disaster;
 
 use std::path::{Path, PathBuf};
@@ -503,7 +505,9 @@ mod tests {
             let mut note1 = None;
             for _ in 0..30 {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                if let Ok(Some(n)) = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888").await {
+                if let Ok(Some(n)) =
+                    get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888").await
+                {
                     note1 = Some(n);
                     break;
                 }
@@ -539,7 +543,9 @@ mod tests {
             let mut deleted_note = None;
             for _ in 0..30 {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                if let Ok(Some(n)) = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888").await {
+                if let Ok(Some(n)) =
+                    get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888").await
+                {
                     if n.is_deleted {
                         deleted_note = Some(n);
                         break;

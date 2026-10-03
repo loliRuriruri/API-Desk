@@ -116,13 +116,15 @@ unsafe impl Sync for AgentInstanceLock {}
 
 impl AgentInstanceLock {
     /// 단일 인스턴스 락 획득 시도. 이미 다른 인스턴스가 실행 중이면 None을 반환.
-    pub fn try_acquire(_storage_root: &Path) -> Option<Self> {
+    pub fn try_acquire(storage_root: &Path) -> Option<Self> {
+        Self::try_acquire_named(storage_root, AGENT_MUTEX_NAME)
+    }
+
+    /// 지정된 이름으로 단일 인스턴스 락 획득 시도 (테스트 격리 지원).
+    pub fn try_acquire_named(_storage_root: &Path, lock_name: &str) -> Option<Self> {
         #[cfg(windows)]
         {
-            let wide_name: Vec<u16> = AGENT_MUTEX_NAME
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let wide_name: Vec<u16> = lock_name.encode_utf16().chain(std::iter::once(0)).collect();
             let handle =
                 unsafe { win32::CreateMutexW(std::ptr::null_mut(), 1, wide_name.as_ptr()) };
             if handle.is_null() {
@@ -140,7 +142,7 @@ impl AgentInstanceLock {
         }
         #[cfg(not(windows))]
         {
-            let lock_path = _storage_root.join("agent.instance.lock");
+            let lock_path = _storage_root.join(format!("{lock_name}.lock"));
             if let Ok(file) = std::fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -178,15 +180,20 @@ pub struct CrossProcessGcLock;
 
 impl CrossProcessGcLock {
     pub fn acquire(storage_root: &Path, timeout: Duration) -> Result<NamedMutexGuard, AppError> {
+        Self::acquire_named(storage_root, GC_MUTEX_NAME, timeout)
+    }
+
+    pub fn acquire_named(
+        storage_root: &Path,
+        lock_name: &str,
+        timeout: Duration,
+    ) -> Result<NamedMutexGuard, AppError> {
         let _ = storage_root;
         let _ = std::fs::create_dir_all(storage_root);
 
         #[cfg(windows)]
         {
-            let wide_name: Vec<u16> = GC_MUTEX_NAME
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let wide_name: Vec<u16> = lock_name.encode_utf16().chain(std::iter::once(0)).collect();
             let handle =
                 unsafe { win32::CreateMutexW(std::ptr::null_mut(), 0, wide_name.as_ptr()) };
             if handle.is_null() {
