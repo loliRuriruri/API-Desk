@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod models;
 pub mod parser;
 pub mod pipeline;
@@ -16,6 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::error::AppError;
 
+pub use commands::*;
 pub use models::*;
 pub use parser::{parse_tab_state, parse_window_state};
 pub use pipeline::capture_state_file;

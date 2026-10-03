@@ -230,3 +230,50 @@ pub struct NoteDeletedEvent {
     pub source_id: String,
     pub deleted_at: String,
 }
+
+/// 프런트엔드용 노트 요약 DTO (목록 렌더링에 필요한 정보만 포함, 대용량 본문 제외).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSummaryDto {
+    pub id: String,
+    pub source_id: String,
+    pub display_title: String,
+    pub original_path: Option<String>,
+    pub is_saved: bool,
+    pub is_deleted: bool,
+    pub first_seen_at: String,
+    pub last_seen_at: String,
+    pub deleted_at: Option<String>,
+    pub version_count: i64,
+    pub last_snapshot_id: Option<String>,
+    pub last_snapshot_at: Option<String>,
+    pub last_content_hash: Option<String>,
+    pub last_source_size: Option<i64>,
+    pub last_parse_status: Option<ParseStatus>,
+    pub preview_text: Option<String>,
+}
+
+/// 프런트엔드용 감시 상태 DTO.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescueStatusDto {
+    pub enabled: bool,
+    pub watch_enabled: bool,
+    pub is_watching: bool,
+    pub status: String,
+    pub message: Option<String>,
+    pub storage_stats: StorageStatistics,
+    pub last_snapshot_at: Option<String>,
+    pub local_state_path: Option<String>,
+}
+
+/// 프런트엔드 설정 변경 DTO.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateRescueSettingsDto {
+    pub enabled: Option<bool>,
+    pub watch_enabled: Option<bool>,
+    pub retention_days: Option<u32>,
+    pub deleted_retention_days: Option<u32>,
+    pub max_storage_bytes: Option<u64>,
+}

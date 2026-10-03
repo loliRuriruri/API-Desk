@@ -6,6 +6,7 @@ import { ApisPage } from "./pages/ApisPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { ImportPage } from "./pages/ImportPage";
 import { LocalServicesPage } from "./pages/LocalServicesPage";
+import { NotepadRescuePage } from "./pages/NotepadRescuePage";
 import { ModelsPage } from "./pages/ModelsPage";
 import { ProjectDetailPage } from "./pages/ProjectDetailPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
@@ -57,6 +58,7 @@ const PAGE_TITLES: Record<PageKey, string> = {
   apis: "API 관리",
   models: "모델",
   services: "로컬 서비스",
+  "notepad-rescue": "Notepad Rescue",
   projects: "프로젝트",
   settings: "설정",
   import: "텍스트 가져오기",
@@ -355,6 +357,8 @@ function MainApp() {
         return <ModelsPage key={`models-${route.nonce}`} />;
       case "services":
         return <LocalServicesPage key={`services-${route.nonce}`} />;
+      case "notepad-rescue":
+        return <NotepadRescuePage key={`notepad-rescue-${route.nonce}`} />;
       case "projects":
         if (route.focusKind === "project-detail" && route.focusId) {
           return (

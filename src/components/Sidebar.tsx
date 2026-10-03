@@ -5,6 +5,7 @@ export type PageKey =
   | "apis"
   | "models"
   | "services"
+  | "notepad-rescue"
   | "projects"
   | "settings"
   | "import";
@@ -14,6 +15,7 @@ const NAV_ITEMS: Array<{ key: PageKey; label: string; hint: string }> = [
   { key: "apis", label: "API 관리", hint: "프로바이더 · 계정 · 키" },
   { key: "models", label: "모델", hint: "모델 목록" },
   { key: "services", label: "로컬 서비스", hint: "Laya · 로컬 AI 실행" },
+  { key: "notepad-rescue", label: "Notepad Rescue", hint: "메모장 세션 백업" },
   { key: "projects", label: "프로젝트", hint: "사용 매핑" },
   { key: "settings", label: "설정", hint: "환경 설정" },
 ];

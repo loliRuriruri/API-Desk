@@ -394,6 +394,16 @@ pub fn run() {
             turzx::turzx_disconnect,
             turzx::turzx_preview,
             turzx::turzx_export_preview,
+            notepad_rescue::rescue_get_status,
+            notepad_rescue::rescue_list_notes,
+            notepad_rescue::rescue_get_note,
+            notepad_rescue::rescue_list_snapshots,
+            notepad_rescue::rescue_get_snapshot,
+            notepad_rescue::rescue_get_settings,
+            notepad_rescue::rescue_update_settings,
+            notepad_rescue::rescue_export_text,
+            notepad_rescue::rescue_cleanup_stale,
+            notepad_rescue::rescue_open_exported_note,
         ])
         .build(tauri::generate_context!())
         .expect("error while building API Desk")

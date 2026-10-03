@@ -3,8 +3,8 @@ use std::str::FromStr;
 use sqlx::{Row, SqlitePool};
 
 use super::models::{
-    NoteFilter, NotepadNote, NotepadRescueSettings, NotepadSession, NotepadSnapshot, ParseStatus,
-    SourceType, StorageStatistics,
+    NoteFilter, NoteSummaryDto, NotepadNote, NotepadRescueSettings, NotepadSession,
+    NotepadSnapshot, ParseStatus, SourceType, StorageStatistics,
 };
 use crate::error::AppError;
 
@@ -281,6 +281,210 @@ pub async fn list_notes(
     rows.iter().map(map_note_row).collect()
 }
 
+pub async fn list_notes_summary(
+    pool: &SqlitePool,
+    filter: &NoteFilter,
+) -> Result<Vec<NoteSummaryDto>, AppError> {
+    let mut sql = String::from(
+        "SELECT
+            n.id,
+            n.source_id,
+            n.display_title,
+            n.original_path,
+            n.is_saved,
+            n.is_deleted,
+            n.first_seen_at,
+            n.last_seen_at,
+            n.deleted_at,
+            (SELECT COUNT(*) FROM notepad_snapshots s WHERE s.note_id = n.id) AS version_count,
+            s.id AS last_snapshot_id,
+            s.captured_at AS last_snapshot_at,
+            s.content_hash AS last_content_hash,
+            s.source_size AS last_source_size,
+            s.parse_status AS last_parse_status,
+            s.recovered_text AS last_recovered_text
+         FROM notepad_notes n
+         LEFT JOIN notepad_snapshots s ON s.id = (
+             SELECT id FROM notepad_snapshots WHERE note_id = n.id ORDER BY captured_at DESC, rowid DESC LIMIT 1
+         )
+         WHERE 1=1",
+    );
+
+    if let Some(deleted) = filter.is_deleted {
+        if deleted {
+            sql.push_str(" AND n.is_deleted = 1");
+        } else {
+            sql.push_str(" AND n.is_deleted = 0");
+        }
+    }
+
+    let has_query = filter
+        .query
+        .as_ref()
+        .map(|q| !q.trim().is_empty())
+        .unwrap_or(false);
+    if has_query {
+        sql.push_str(
+            " AND (
+                n.display_title LIKE ?1
+                OR n.original_path LIKE ?1
+                OR n.id IN (
+                    SELECT note_id FROM notepad_snapshots WHERE recovered_text LIKE ?1
+                )
+            )",
+        );
+    }
+
+    sql.push_str(" ORDER BY n.last_seen_at DESC");
+
+    if let Some(limit) = filter.limit {
+        sql.push_str(&format!(" LIMIT {}", limit.max(1)));
+        if let Some(offset) = filter.offset {
+            sql.push_str(&format!(" OFFSET {}", offset.max(0)));
+        }
+    }
+
+    let mut query = sqlx::query(&sql);
+    if has_query {
+        let pattern = format!("%{}%", filter.query.as_deref().unwrap().trim());
+        query = query.bind(pattern);
+    }
+
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::Database(format!("노트 요약 목록 조회 실패: {e}")))?;
+
+    let mut list = Vec::with_capacity(rows.len());
+    for row in rows {
+        let raw_preview: Option<String> = row.try_get("last_recovered_text").ok();
+        let preview_text = raw_preview.map(|text| {
+            let collapsed: String = text
+                .chars()
+                .map(|c| {
+                    if c == '\r' || c == '\n' || c == '\t' {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            let trimmed = collapsed.trim();
+            if trimmed.chars().count() > 120 {
+                let s: String = trimmed.chars().take(120).collect();
+                format!("{s}...")
+            } else {
+                trimmed.to_string()
+            }
+        });
+
+        let parse_status_str: Option<String> = row.try_get("last_parse_status").ok();
+        let last_parse_status = parse_status_str.map(|s| ParseStatus::from_str(&s).unwrap());
+
+        list.push(NoteSummaryDto {
+            id: row.try_get("id").unwrap_or_default(),
+            source_id: row.try_get("source_id").unwrap_or_default(),
+            display_title: row.try_get("display_title").unwrap_or_default(),
+            original_path: row.try_get("original_path").ok(),
+            is_saved: row.try_get::<i64, _>("is_saved").unwrap_or(0) != 0,
+            is_deleted: row.try_get::<i64, _>("is_deleted").unwrap_or(0) != 0,
+            first_seen_at: row.try_get("first_seen_at").unwrap_or_default(),
+            last_seen_at: row.try_get("last_seen_at").unwrap_or_default(),
+            deleted_at: row.try_get("deleted_at").ok(),
+            version_count: row.try_get("version_count").unwrap_or(0),
+            last_snapshot_id: row.try_get("last_snapshot_id").ok(),
+            last_snapshot_at: row.try_get("last_snapshot_at").ok(),
+            last_content_hash: row.try_get("last_content_hash").ok(),
+            last_source_size: row.try_get("last_source_size").ok(),
+            last_parse_status,
+            preview_text,
+        });
+    }
+
+    Ok(list)
+}
+
+pub async fn get_note_summary(
+    pool: &SqlitePool,
+    note_id: &str,
+) -> Result<Option<NoteSummaryDto>, AppError> {
+    let row = sqlx::query(
+        "SELECT
+            n.id,
+            n.source_id,
+            n.display_title,
+            n.original_path,
+            n.is_saved,
+            n.is_deleted,
+            n.first_seen_at,
+            n.last_seen_at,
+            n.deleted_at,
+            (SELECT COUNT(*) FROM notepad_snapshots s WHERE s.note_id = n.id) AS version_count,
+            s.id AS last_snapshot_id,
+            s.captured_at AS last_snapshot_at,
+            s.content_hash AS last_content_hash,
+            s.source_size AS last_source_size,
+            s.parse_status AS last_parse_status,
+            s.recovered_text AS last_recovered_text
+         FROM notepad_notes n
+         LEFT JOIN notepad_snapshots s ON s.id = (
+             SELECT id FROM notepad_snapshots WHERE note_id = n.id ORDER BY captured_at DESC, rowid DESC LIMIT 1
+         )
+         WHERE n.id = ?1",
+    )
+    .bind(note_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| AppError::Database(format!("노트 요약 조회 실패: {e}")))?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let raw_preview: Option<String> = row.try_get("last_recovered_text").ok();
+    let preview_text = raw_preview.map(|text| {
+        let collapsed: String = text
+            .chars()
+            .map(|c| {
+                if c == '\r' || c == '\n' || c == '\t' {
+                    ' '
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let trimmed = collapsed.trim();
+        if trimmed.chars().count() > 120 {
+            let s: String = trimmed.chars().take(120).collect();
+            format!("{s}...")
+        } else {
+            trimmed.to_string()
+        }
+    });
+
+    let parse_status_str: Option<String> = row.try_get("last_parse_status").ok();
+    let last_parse_status = parse_status_str.map(|s| ParseStatus::from_str(&s).unwrap());
+
+    Ok(Some(NoteSummaryDto {
+        id: row.try_get("id").unwrap_or_default(),
+        source_id: row.try_get("source_id").unwrap_or_default(),
+        display_title: row.try_get("display_title").unwrap_or_default(),
+        original_path: row.try_get("original_path").ok(),
+        is_saved: row.try_get::<i64, _>("is_saved").unwrap_or(0) != 0,
+        is_deleted: row.try_get::<i64, _>("is_deleted").unwrap_or(0) != 0,
+        first_seen_at: row.try_get("first_seen_at").unwrap_or_default(),
+        last_seen_at: row.try_get("last_seen_at").unwrap_or_default(),
+        deleted_at: row.try_get("deleted_at").ok(),
+        version_count: row.try_get("version_count").unwrap_or(0),
+        last_snapshot_id: row.try_get("last_snapshot_id").ok(),
+        last_snapshot_at: row.try_get("last_snapshot_at").ok(),
+        last_content_hash: row.try_get("last_content_hash").ok(),
+        last_source_size: row.try_get("last_source_size").ok(),
+        last_parse_status,
+        preview_text,
+    }))
+}
+
 // ---------------------------------------------------------------- Snapshots
 
 fn map_snapshot_row(row: &sqlx::sqlite::SqliteRow) -> Result<NotepadSnapshot, AppError> {
@@ -384,6 +588,23 @@ pub async fn get_latest_snapshot_for_note(
     .fetch_optional(pool)
     .await
     .map_err(|e| AppError::Database(format!("최신 스냅샷 조회 실패: {e}")))?;
+
+    row.map(|r| map_snapshot_row(&r)).transpose()
+}
+
+pub async fn get_snapshot(
+    pool: &SqlitePool,
+    snapshot_id: &str,
+) -> Result<Option<NotepadSnapshot>, AppError> {
+    let row = sqlx::query(
+        "SELECT * FROM notepad_snapshots
+         WHERE id = ?1
+         LIMIT 1",
+    )
+    .bind(snapshot_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| AppError::Database(format!("스냅샷 조회 실패: {e}")))?;
 
     row.map(|r| map_snapshot_row(&r)).transpose()
 }
