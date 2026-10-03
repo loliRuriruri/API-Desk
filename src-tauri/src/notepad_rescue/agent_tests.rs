@@ -17,7 +17,9 @@ use sqlx::SqlitePool;
 
 use crate::notepad_rescue::coordination::*;
 use crate::notepad_rescue::gc::{execute_gc, plan_gc};
-use crate::notepad_rescue::models::{AgentProtectionStatusDto, NoteFilter, NotepadNote, NotepadRescueSettings, SourceType};
+use crate::notepad_rescue::models::{
+    AgentProtectionStatusDto, NoteFilter, NotepadNote, NotepadRescueSettings, SourceType,
+};
 use crate::notepad_rescue::parser::generate_synthetic_unsaved;
 use crate::notepad_rescue::pipeline::capture_state_file;
 use crate::notepad_rescue::repository::*;

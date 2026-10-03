@@ -46,22 +46,22 @@ async fn async_main() {
                 }
             }
         }
-        "rollback" => {
-            match rollback_last_restore(&storage_root, &notepad_local_state) {
-                Ok(rep) => {
-                    println!("{}", serde_json::to_string(&rep).unwrap());
-                }
-                Err(e) => {
-                    eprintln!("ERROR: {e}");
-                    std::process::exit(1);
-                }
+        "rollback" => match rollback_last_restore(&storage_root, &notepad_local_state) {
+            Ok(rep) => {
+                println!("{}", serde_json::to_string(&rep).unwrap());
             }
-        }
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                std::process::exit(1);
+            }
+        },
         "can_rollback" => {
             println!("{}", can_rollback(&storage_root));
         }
         _ => {
-            eprintln!("Usage: nr7_restore_cli [restore <note_id> [snap_id] | rollback | can_rollback]");
+            eprintln!(
+                "Usage: nr7_restore_cli [restore <note_id> [snap_id] | rollback | can_rollback]"
+            );
         }
     }
 }

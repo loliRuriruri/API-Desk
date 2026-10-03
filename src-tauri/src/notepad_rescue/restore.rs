@@ -200,9 +200,8 @@ pub fn atomic_write(target_path: &Path, data: &[u8]) -> Result<(), AppError> {
         .unwrap_or("file");
     let tmp_path = parent.join(format!("{filename}.{}.tmp", generate_uuid_v4()));
 
-    let mut file = File::create(&tmp_path).map_err(|e| {
-        AppError::Io(format!("임시 파일 생성 실패 ({}): {e}", tmp_path.display()))
-    })?;
+    let mut file = File::create(&tmp_path)
+        .map_err(|e| AppError::Io(format!("임시 파일 생성 실패 ({}): {e}", tmp_path.display())))?;
 
     file.write_all(data).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
@@ -351,8 +350,12 @@ pub fn validate_snapshot_for_restore(
         )));
     }
 
-    let data = fs::read(&blob_path)
-        .map_err(|e| AppError::Io(format!("RAW 스냅샷 읽기 실패 ({}): {e}", blob_path.display())))?;
+    let data = fs::read(&blob_path).map_err(|e| {
+        AppError::Io(format!(
+            "RAW 스냅샷 읽기 실패 ({}): {e}",
+            blob_path.display()
+        ))
+    })?;
 
     let computed_hash = compute_sha256(&data);
     if computed_hash != snapshot.content_hash {
@@ -441,17 +444,25 @@ pub async fn restore_native_tab(
 
     // 5. Notepad LocalState 디렉터리 확인
     let notepad_local_state = default_notepad_local_state_dir().ok_or_else(|| {
-        AppError::InvalidRequest("Windows Notepad LocalState 경로를 확인할 수 없습니다.".to_string())
+        AppError::InvalidRequest(
+            "Windows Notepad LocalState 경로를 확인할 수 없습니다.".to_string(),
+        )
     })?;
 
     let tab_state_dir = notepad_local_state.join("TabState");
     let window_state_dir = notepad_local_state.join("WindowState");
 
     fs::create_dir_all(&tab_state_dir).map_err(|e| {
-        AppError::Io(format!("TabState 디렉터리 생성 실패 ({}): {e}", tab_state_dir.display()))
+        AppError::Io(format!(
+            "TabState 디렉터리 생성 실패 ({}): {e}",
+            tab_state_dir.display()
+        ))
     })?;
     fs::create_dir_all(&window_state_dir).map_err(|e| {
-        AppError::Io(format!("WindowState 디렉터리 생성 실패 ({}): {e}", window_state_dir.display()))
+        AppError::Io(format!(
+            "WindowState 디렉터리 생성 실패 ({}): {e}",
+            window_state_dir.display()
+        ))
     })?;
 
     // 6. 사전 안전 백업 (실패 시 복원 즉시 중단)
@@ -461,8 +472,16 @@ pub async fn restore_native_tab(
     // 7. 충돌 방지 탭 GUID 및 파일명 결정
     // 기존 탭 파일과 충돌하지 않도록 보장
     let (tab_uuid_str, tab_filename, tab_guid_le) = match guid_str_to_bytes_le(&note.source_id) {
-        Some(guid_le) if !tab_state_dir.join(format!("{}.bin", note.source_id)).exists() => {
-            (note.source_id.clone(), format!("{}.bin", note.source_id), guid_le)
+        Some(guid_le)
+            if !tab_state_dir
+                .join(format!("{}.bin", note.source_id))
+                .exists() =>
+        {
+            (
+                note.source_id.clone(),
+                format!("{}.bin", note.source_id),
+                guid_le,
+            )
         }
         _ => {
             let new_uuid = generate_uuid_v4();

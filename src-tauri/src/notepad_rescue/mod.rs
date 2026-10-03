@@ -200,7 +200,9 @@ pub fn start_worker(app: &tauri::AppHandle) {
                         watch_enabled: true,
                         is_watching: true,
                         status: "DEGRADED".to_string(),
-                        message: Some("Background Agent 하트비트 지연 (보호 소유권 유지 중)".to_string()),
+                        message: Some(
+                            "Background Agent 하트비트 지연 (보호 소유권 유지 중)".to_string(),
+                        ),
                     },
                 );
             }

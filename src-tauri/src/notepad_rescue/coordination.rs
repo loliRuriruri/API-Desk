@@ -557,8 +557,14 @@ pub fn default_agent_executable_path() -> Result<PathBuf, AppError> {
     // 개발 환경(Cargo workspace / target/debug, target/release) 탐색
     if let Ok(cwd) = std::env::current_dir() {
         let candidates = [
-            cwd.join("src-tauri").join("target").join("debug").join(agent_name),
-            cwd.join("src-tauri").join("target").join("release").join(agent_name),
+            cwd.join("src-tauri")
+                .join("target")
+                .join("debug")
+                .join(agent_name),
+            cwd.join("src-tauri")
+                .join("target")
+                .join("release")
+                .join(agent_name),
             cwd.join("target").join("debug").join(agent_name),
             cwd.join("target").join("release").join(agent_name),
         ];

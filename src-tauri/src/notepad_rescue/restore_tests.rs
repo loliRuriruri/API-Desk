@@ -201,8 +201,14 @@ mod tests {
         assert!(backup_dir.exists());
         assert_eq!(backed_tabs.len(), 1);
         assert_eq!(backed_wins.len(), 1);
-        assert!(backup_dir.join("TabState").join("existing-tab-1.bin").exists());
-        assert!(backup_dir.join("WindowState").join("existing-win-1.0.bin").exists());
+        assert!(backup_dir
+            .join("TabState")
+            .join("existing-tab-1.bin")
+            .exists());
+        assert!(backup_dir
+            .join("WindowState")
+            .join("existing-win-1.0.bin")
+            .exists());
 
         // 2. Simulate restoring a new tab
         let restored_tab_path = live_tab_dir.join("restored-tab.bin");
@@ -228,13 +234,20 @@ mod tests {
             backed_up_tabs: backed_tabs,
             backed_up_windows: backed_wins,
         };
-        let last_restore_file = storage_root.join("restore_backups").join("last_restore.json");
-        fs::write(&last_restore_file, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        let last_restore_file = storage_root
+            .join("restore_backups")
+            .join("last_restore.json");
+        fs::write(
+            &last_restore_file,
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
 
         assert!(can_rollback(&storage_root));
 
         // 3. Rollback
-        let report = rollback_last_restore_internal(&storage_root, &notepad_local_state, false).unwrap();
+        let report =
+            rollback_last_restore_internal(&storage_root, &notepad_local_state, false).unwrap();
         assert!(report.success);
         assert_eq!(report.restored_note_id.as_deref(), Some("test-note"));
 
@@ -256,6 +269,9 @@ mod tests {
 
     #[test]
     fn test_notepad_running_error_message() {
-        assert_eq!(NOTEPAD_RUNNING_ERROR, "메모장 탭 복원을 위해 메모장을 먼저 닫아주세요.");
+        assert_eq!(
+            NOTEPAD_RUNNING_ERROR,
+            "메모장 탭 복원을 위해 메모장을 먼저 닫아주세요."
+        );
     }
 }

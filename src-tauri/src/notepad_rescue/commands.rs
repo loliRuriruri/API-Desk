@@ -549,7 +549,11 @@ pub async fn rescue_get_agent_status(
             )
         }
     } else if in_process_watching {
-        ("in_process_fallback".to_string(), "RUNNING".to_string(), None)
+        (
+            "in_process_fallback".to_string(),
+            "RUNNING".to_string(),
+            None,
+        )
     } else {
         ("none".to_string(), "STOPPED".to_string(), None)
     };
@@ -691,17 +695,18 @@ pub async fn rescue_rollback_last_restore(
     app: AppHandle,
 ) -> Result<super::restore::RollbackReport, AppError> {
     let storage_root = super::storage_root(&app)?;
-    let notepad_local_state = super::watcher::default_notepad_local_state_dir().ok_or_else(|| {
-        AppError::InvalidRequest("Windows Notepad LocalState 경로를 확인할 수 없습니다.".to_string())
-    })?;
+    let notepad_local_state =
+        super::watcher::default_notepad_local_state_dir().ok_or_else(|| {
+            AppError::InvalidRequest(
+                "Windows Notepad LocalState 경로를 확인할 수 없습니다.".to_string(),
+            )
+        })?;
     super::restore::rollback_last_restore(&storage_root, &notepad_local_state)
 }
 
 /// 되돌릴 수 있는 이전 복원 내역이 존재하는지 확인합니다.
 #[tauri::command]
-pub async fn rescue_can_rollback(
-    app: AppHandle,
-) -> Result<bool, AppError> {
+pub async fn rescue_can_rollback(app: AppHandle) -> Result<bool, AppError> {
     let storage_root = super::storage_root(&app)?;
     Ok(super::restore::can_rollback(&storage_root))
 }
