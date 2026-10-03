@@ -424,6 +424,9 @@ pub fn run() {
             notepad_rescue::rescue_restart_agent,
             notepad_rescue::rescue_set_startup_protection,
             notepad_rescue::rescue_get_startup_protection,
+            notepad_rescue::rescue_restore_native_tab,
+            notepad_rescue::rescue_rollback_last_restore,
+            notepad_rescue::rescue_can_rollback,
         ])
         .build(tauri::generate_context!())
         .expect("error while building API Desk")

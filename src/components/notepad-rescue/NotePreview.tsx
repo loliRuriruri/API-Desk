@@ -10,6 +10,9 @@ import {
   formatBytes,
   formatRelativeTime,
   getParseStatusBadge,
+  restoreNativeTab,
+  rollbackLastRestore,
+  canRollback,
 } from "../../lib/notepadRescue";
 import { Badge } from "../Badges";
 import { EmptyState } from "../EmptyState";
@@ -25,6 +28,7 @@ export function NotePreview({
   note,
   onOpenHistory,
   showHistory,
+  onSnapshotUpdated,
 }: NotePreviewProps) {
   const [snapshot, setSnapshot] = useState<NotepadSnapshot | null>(null);
   const [recoveryDetail, setRecoveryDetail] = useState<NoteRecoveryDetailDto | null>(null);
@@ -33,6 +37,18 @@ export function NotePreview({
   const [exporting, setExporting] = useState(false);
   const [exportedPath, setExportedPath] = useState<string | null>(null);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+
+  // NR.7A Native Tab Restore & Rollback state
+  const [restoringNative, setRestoringNative] = useState(false);
+  const [rollingBack, setRollingBack] = useState(false);
+  const [hasRollback, setHasRollback] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreSuccess, setRestoreSuccess] = useState<string | null>(null);
+
+  // Check if rollback is available
+  useEffect(() => {
+    canRollback().then(setHasRollback).catch(() => setHasRollback(false));
+  }, [note?.id]);
 
   // Fetch full snapshot and recovery detail when note changes or lastSnapshotId updates
   useEffect(() => {
@@ -103,6 +119,45 @@ export function NotePreview({
       await openExportedNote(exportedPath);
     } catch (e) {
       setFeedbackMsg(`열기 실패: ${String(e)}`);
+    }
+  };
+
+  const handleRestoreNative = async () => {
+    if (!note) return;
+    if (snapshot?.parseStatus !== "PARSED") {
+      setRestoreError("정상 파싱된(PARSED) 스냅샷만 메모장 탭으로 복원할 수 있습니다.");
+      return;
+    }
+    try {
+      setRestoringNative(true);
+      setRestoreError(null);
+      setRestoreSuccess(null);
+      await restoreNativeTab(note.id, snapshot?.id);
+      setRestoreSuccess("메모장 탭으로 성공적으로 복원되었습니다. (메모장이 실행되었습니다)");
+      setHasRollback(true);
+      onSnapshotUpdated?.();
+    } catch (e: any) {
+      const errStr = typeof e === "string" ? e : e?.message || String(e);
+      setRestoreError(errStr);
+    } finally {
+      setRestoringNative(false);
+    }
+  };
+
+  const handleRollback = async () => {
+    try {
+      setRollingBack(true);
+      setRestoreError(null);
+      setRestoreSuccess(null);
+      const rep = await rollbackLastRestore();
+      setRestoreSuccess(rep.message || "마지막 복원이 정상적으로 되돌려졌습니다.");
+      setHasRollback(false);
+      onSnapshotUpdated?.();
+    } catch (e: any) {
+      const errStr = typeof e === "string" ? e : e?.message || String(e);
+      setRestoreError(errStr);
+    } finally {
+      setRollingBack(false);
     }
   };
 
@@ -205,8 +260,30 @@ export function NotePreview({
             disabled={!textContent || loading}
             title="복구된 텍스트를 클립보드에 복사합니다"
           >
-            {copied ? "✓ 복사됨" : "텍스트 복사"}
+            {copied ? "✓ 복사됨" : "텍스트 복구"}
           </button>
+
+          <button
+            type="button"
+            className="button button-accent"
+            onClick={handleRestoreNative}
+            disabled={loading || restoringNative || rollingBack || snapshot?.parseStatus !== "PARSED"}
+            title="이 스냅샷을 실제 Windows 메모장 탭으로 복원하고 메모장을 엽니다"
+          >
+            {restoringNative ? "메모장 복원 중…" : "메모장 탭으로 복원"}
+          </button>
+
+          {hasRollback && (
+            <button
+              type="button"
+              className="button button-subtle"
+              onClick={handleRollback}
+              disabled={rollingBack || restoringNative}
+              title="방금 수행한 메모장 탭 복원을 이전 상태로 되돌립니다"
+            >
+              {rollingBack ? "되돌리는 중…" : "마지막 복원 되돌리기"}
+            </button>
+          )}
 
           <button
             type="button"
@@ -240,6 +317,69 @@ export function NotePreview({
         </div>
       </div>
 
+      {/* Prominent Restore Error Banner (e.g. Notepad running check) */}
+      {restoreError && (
+        <div
+          style={{
+            background: "rgba(239, 68, 68, 0.12)",
+            border: "1px solid rgba(239, 68, 68, 0.4)",
+            borderRadius: 6,
+            padding: "10px 14px",
+            marginBottom: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 600, color: "#f87171", fontSize: "0.88rem" }}>
+              ⚠️ {restoreError}
+            </div>
+            {restoreError.includes("닫아주세요") && (
+              <div style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginTop: 2 }}>
+                Windows 메모장 프로그램이 열려 있으면 안전한 데이터 복원을 위해 작업을 진행할 수 없습니다. 메모장을 먼저 닫은 후 다시 복원 버튼을 클릭해 주세요.
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            className="button button-subtle"
+            style={{ fontSize: "0.75rem", padding: "2px 8px" }}
+            onClick={() => setRestoreError(null)}
+          >
+            닫기
+          </button>
+        </div>
+      )}
+
+      {/* Prominent Restore Success Banner */}
+      {restoreSuccess && (
+        <div
+          style={{
+            background: "rgba(34, 197, 94, 0.12)",
+            border: "1px solid rgba(34, 197, 94, 0.4)",
+            borderRadius: 6,
+            padding: "10px 14px",
+            marginBottom: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div style={{ fontWeight: 600, color: "#4ade80", fontSize: "0.88rem" }}>
+            ✓ {restoreSuccess}
+          </div>
+          <button
+            type="button"
+            className="button button-subtle"
+            style={{ fontSize: "0.75rem", padding: "2px 8px" }}
+            onClick={() => setRestoreSuccess(null)}
+          >
+            닫기
+          </button>
+        </div>
+      )}
+
       {feedbackMsg && (
         <div className="preview-notice-banner">
           <span>{feedbackMsg}</span>
@@ -265,20 +405,32 @@ export function NotePreview({
               ⚠️ 메모장에서 닫힘 / 삭제됨 (Deleted from Notepad) — 백업본 복구 가능 (Backup available)
             </div>
             <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: 2 }}>
-              Notepad Rescue에 보관된 백업을 안전하게 복구하거나 파일로 내보낼 수 있습니다. (원본 메모장 세션 파일은 변경되지 않습니다)
+              Notepad Rescue에 보관된 백업을 안전하게 복구하거나 메모장 탭으로 다시 열 수 있습니다.
             </div>
           </div>
-          {recoveryDetail?.latestValidSnapshot && snapshot?.id !== recoveryDetail.latestValidSnapshot.id && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {recoveryDetail?.latestValidSnapshot && snapshot?.id !== recoveryDetail.latestValidSnapshot.id && (
+              <button
+                type="button"
+                className="button button-subtle"
+                style={{ fontSize: "0.8rem", padding: "4px 10px" }}
+                onClick={() => setSnapshot(recoveryDetail.latestValidSnapshot!)}
+                title="가장 최근 정상적으로 파싱된 텍스트 스냅샷을 불러옵니다"
+              >
+                최신 유효 버전 복구
+              </button>
+            )}
             <button
               type="button"
               className="button button-accent"
-              style={{ fontSize: "0.8rem", padding: "4px 10px" }}
-              onClick={() => setSnapshot(recoveryDetail.latestValidSnapshot!)}
-              title="가장 최근 정상적으로 파싱된 텍스트 스냅샷을 불러옵니다"
+              style={{ fontSize: "0.82rem", padding: "5px 12px" }}
+              onClick={handleRestoreNative}
+              disabled={loading || restoringNative || rollingBack || snapshot?.parseStatus !== "PARSED"}
+              title="삭제된 메모를 실제 Windows 메모장 탭으로 즉시 복원합니다"
             >
-              최신 유효 버전 복구
+              {restoringNative ? "복원 중…" : "메모장 탭으로 복원"}
             </button>
-          )}
+          </div>
         </div>
       )}
 

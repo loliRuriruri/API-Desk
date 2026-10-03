@@ -303,8 +303,8 @@ mod tests {
         // 100ms 간격으로 3회 이벤트 유입 (총 200ms 경과 시점)
         for _ in 1..=3 {
             let deadline = Instant::now() + Duration::from_millis(300);
-            tauri::async_runtime::block_on(async {
-                let mut map = pending.lock().await;
+            {
+                let mut map = pending.lock().unwrap();
                 map.insert(
                     file_path.clone(),
                     PendingEvent {
@@ -313,25 +313,25 @@ mod tests {
                         is_remove: false,
                     },
                 );
-            });
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
 
         // 마지막 갱신으로부터 300ms 이전에는 맵에 남아있어야 함 (아직 만료되지 않음)
-        tauri::async_runtime::block_on(async {
-            let map = pending.lock().await;
+        {
+            let map = pending.lock().unwrap();
             assert_eq!(map.len(), 1);
             let entry = map.get(&file_path).unwrap();
             assert!(Instant::now() < entry.deadline);
-        });
+        }
 
         // 350ms 대기 후 만료 확인
         std::thread::sleep(Duration::from_millis(350));
-        tauri::async_runtime::block_on(async {
-            let map = pending.lock().await;
+        {
+            let map = pending.lock().unwrap();
             let entry = map.get(&file_path).unwrap();
             assert!(Instant::now() >= entry.deadline);
-        });
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

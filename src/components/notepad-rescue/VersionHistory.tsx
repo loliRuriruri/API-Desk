@@ -8,6 +8,7 @@ import {
   formatBytes,
   formatRelativeTime,
   getParseStatusBadge,
+  restoreNativeTab,
 } from "../../lib/notepadRescue";
 import { Badge } from "../Badges";
 
@@ -29,6 +30,8 @@ export function VersionHistory({
   const [copied, setCopied] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const [restoringVersion, setRestoringVersion] = useState(false);
+  const [restoreMsg, setRestoreMsg] = useState<{ text: string; isError: boolean } | null>(null);
 
   // Diff state
   const [viewMode, setViewMode] = useState<"preview" | "diff">("preview");
@@ -143,6 +146,31 @@ export function VersionHistory({
       setExportMsg(`내보내기 실패: ${String(e)}`);
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleRestoreVersionToNotepad = async () => {
+    if (!selectedSnapshot) return;
+    if (selectedSnapshot.parseStatus !== "PARSED") {
+      setRestoreMsg({
+        text: "정상 파싱된(PARSED) 스냅샷만 메모장 탭으로 복원할 수 있습니다.",
+        isError: true,
+      });
+      return;
+    }
+    try {
+      setRestoringVersion(true);
+      setRestoreMsg(null);
+      await restoreNativeTab(noteId, selectedSnapshot.id);
+      setRestoreMsg({
+        text: "이 버전이 메모장 탭으로 성공적으로 복원되었습니다. (메모장이 실행되었습니다)",
+        isError: false,
+      });
+    } catch (e: any) {
+      const errStr = typeof e === "string" ? e : e?.message || String(e);
+      setRestoreMsg({ text: errStr, isError: true });
+    } finally {
+      setRestoringVersion(false);
     }
   };
 
@@ -273,6 +301,19 @@ export function VersionHistory({
                       </button>
                       <button
                         type="button"
+                        className="button button-accent"
+                        onClick={handleRestoreVersionToNotepad}
+                        disabled={
+                          !selectedSnapshot.recoveredText ||
+                          selectedSnapshot.parseStatus !== "PARSED" ||
+                          restoringVersion
+                        }
+                        title="선택된 버전의 스냅샷을 실제 Windows 메모장 탭으로 복원합니다"
+                      >
+                        {restoringVersion ? "메모장 복원 중…" : "메모장 탭으로 복원"}
+                      </button>
+                      <button
+                        type="button"
                         className="button button-subtle"
                         onClick={handleExport}
                         disabled={!selectedSnapshot.recoveredText || exporting}
@@ -281,6 +322,41 @@ export function VersionHistory({
                       </button>
                     </div>
                   </div>
+
+                  {restoreMsg && (
+                    <div
+                      style={{
+                        background: restoreMsg.isError
+                          ? "rgba(239, 68, 68, 0.12)"
+                          : "rgba(34, 197, 94, 0.12)",
+                        border: `1px solid ${
+                          restoreMsg.isError
+                            ? "rgba(239, 68, 68, 0.4)"
+                            : "rgba(34, 197, 94, 0.4)"
+                        }`,
+                        borderRadius: 6,
+                        padding: "8px 12px",
+                        marginBottom: 10,
+                        fontSize: "0.85rem",
+                        color: restoreMsg.isError ? "#f87171" : "#4ade80",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                      }}
+                    >
+                      <span>
+                        {restoreMsg.isError ? `⚠️ ${restoreMsg.text}` : `✓ ${restoreMsg.text}`}
+                      </span>
+                      <button
+                        type="button"
+                        className="button button-subtle"
+                        style={{ fontSize: "0.75rem", padding: "2px 6px" }}
+                        onClick={() => setRestoreMsg(null)}
+                      >
+                        닫기
+                      </button>
+                    </div>
+                  )}
 
                   {exportMsg && <div className="preview-notice-banner">{exportMsg}</div>}
 

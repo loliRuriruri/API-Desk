@@ -407,6 +407,41 @@ export async function getStartupProtection(): Promise<boolean> {
   return invoke<boolean>("rescue_get_startup_protection");
 }
 
+export interface RestoreNativeReport {
+  success: boolean;
+  noteId: string;
+  snapshotId: string;
+  restoredTabUuid: string;
+  restoredTabPath: string;
+  backupDir: string;
+  notepadLaunched: boolean;
+  message: string;
+}
+
+export interface RollbackReport {
+  success: boolean;
+  restoredNoteId?: string | null;
+  backupTimestamp?: string | null;
+  removedTabFile?: string | null;
+  removedWindowFiles: string[];
+  message: string;
+}
+
+export async function restoreNativeTab(
+  noteId: string,
+  snapshotId?: string,
+): Promise<RestoreNativeReport> {
+  return invoke<RestoreNativeReport>("rescue_restore_native_tab", { noteId, snapshotId });
+}
+
+export async function rollbackLastRestore(): Promise<RollbackReport> {
+  return invoke<RollbackReport>("rescue_rollback_last_restore");
+}
+
+export async function canRollback(): Promise<boolean> {
+  return invoke<boolean>("rescue_can_rollback");
+}
+
 // ============================================================================
 // Event Listeners
 // ============================================================================

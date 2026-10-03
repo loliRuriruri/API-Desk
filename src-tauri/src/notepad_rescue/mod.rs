@@ -8,6 +8,7 @@ pub mod pipeline;
 pub mod reader;
 pub mod recovery;
 pub mod repository;
+pub mod restore;
 pub mod snapshot;
 pub mod watcher;
 
@@ -15,6 +16,8 @@ pub mod watcher;
 pub mod agent_tests;
 #[cfg(test)]
 pub mod disaster;
+#[cfg(test)]
+pub mod restore_tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +38,7 @@ pub use parser::{parse_tab_state, parse_window_state};
 pub use pipeline::capture_state_file;
 pub use reader::safe_read_file;
 pub use recovery::*;
+pub use restore::*;
 pub use snapshot::{compute_sha256, relative_blob_path, resolve_blob_path, store_blob};
 
 /// 스냅샷의 상대 파일 경로를 생성합니다.

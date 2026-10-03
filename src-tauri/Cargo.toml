@@ -22,6 +22,10 @@ path = "src/main.rs"
 name = "notepad-rescue-agent"
 path = "src/bin/notepad-rescue-agent.rs"
 
+[[bin]]
+name = "nr7_restore_cli"
+path = "src/bin/nr7_restore_cli.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
