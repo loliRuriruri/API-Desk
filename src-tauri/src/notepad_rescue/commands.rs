@@ -277,6 +277,27 @@ pub async fn rescue_export_text(
         .recovered_text
         .ok_or_else(|| AppError::InvalidRequest("복구된 텍스트가 없습니다".into()))?;
 
+    let note = repository::get_note(&pool, &snapshot.note_id)
+        .await?
+        .unwrap_or_else(|| NotepadNote {
+            id: snapshot.note_id.clone(),
+            source_id: "unknown".to_string(),
+            display_title: "Untitled".to_string(),
+            original_path: None,
+            is_saved: false,
+            is_deleted: false,
+            first_seen_at: String::new(),
+            last_seen_at: String::new(),
+            deleted_at: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        });
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
     let target_file = if let Some(dest) = destination_path {
         PathBuf::from(dest)
     } else {
@@ -284,56 +305,118 @@ pub async fn rescue_export_text(
             .path()
             .download_dir()
             .unwrap_or_else(|_| std::env::temp_dir().join("notepad_rescue_exports"));
-        let _ = std::fs::create_dir_all(&downloads_dir);
-
-        let note = repository::get_note(&pool, &snapshot.note_id)
-            .await?
-            .unwrap_or_else(|| NotepadNote {
-                id: snapshot.note_id.clone(),
-                source_id: "unknown".to_string(),
-                display_title: "Untitled".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: String::new(),
-                last_seen_at: String::new(),
-                deleted_at: None,
-                created_at: String::new(),
-                updated_at: String::new(),
-            });
-
-        let sanitized_title: String = note
-            .display_title
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .take(30)
-            .collect();
-        let title = if sanitized_title.trim().is_empty() {
-            "Untitled".to_string()
-        } else {
-            sanitized_title.trim().to_string()
-        };
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        downloads_dir.join(format!("{title}_{ts}.txt"))
+        let safe_name = super::recovery::sanitize_export_filename(&note.display_title, ts as i64);
+        downloads_dir.join(safe_name)
     };
 
-    if let Some(parent) = target_file.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    let exported_path = super::recovery::write_atomic_txt(&target_file, &text)?;
+    let _ = super::recovery::write_export_sidecar(
+        &exported_path,
+        &snapshot.note_id,
+        &snapshot.id,
+        &snapshot.captured_at,
+        &snapshot.content_hash,
+    );
+
+    Ok(exported_path.to_string_lossy().to_string())
+}
+
+/// 특정 노트의 복구 상세 정보(최신 스냅샷, 최신 유효 스냅샷, 복구 신뢰도 등)를 조회합니다.
+#[tauri::command]
+pub async fn rescue_get_recovery_detail(
+    app: AppHandle,
+    note_id: String,
+) -> Result<super::recovery::NoteRecoveryDetailDto, AppError> {
+    let pool = open_db_pool(&app).await?;
+    let store_root = super::storage_root(&app)?;
+    super::recovery::get_note_recovery_detail(&pool, &store_root, &note_id).await
+}
+
+/// 재해 복구 패키지(Disaster Recovery Package)를 로컬 디렉터리에 내보냅니다.
+#[tauri::command]
+pub async fn rescue_export_package(
+    app: AppHandle,
+    destination_dir: Option<String>,
+) -> Result<super::recovery::RecoveryPackageReport, AppError> {
+    let pool = open_db_pool(&app).await?;
+    let store_root = super::storage_root(&app)?;
+    let target_dir = if let Some(d) = destination_dir {
+        PathBuf::from(d)
+    } else {
+        app.path()
+            .download_dir()
+            .unwrap_or_else(|_| std::env::temp_dir().join("notepad_rescue_packages"))
+    };
+
+    super::recovery::export_recovery_package(&pool, &store_root, &target_dir).await
+}
+
+/// Notepad Rescue 시스템 진단 보고서를 조회합니다 (본문/시크릿 배제).
+#[tauri::command]
+pub async fn rescue_get_diagnostics(
+    app: AppHandle,
+) -> Result<super::recovery::DiagnosticReportDto, AppError> {
+    let pool = open_db_pool(&app).await?;
+    let store_root = super::storage_root(&app)?;
+    let settings = repository::get_settings(&pool).await?;
+    super::recovery::get_diagnostic_report(&pool, &store_root, &settings).await
+}
+
+/// DB 유실(Scenario G) 상황 대비 원시 CAS 스토리지 직접 스캔 및 복구 가능 여부 진단
+#[tauri::command]
+pub async fn rescue_scan_raw_storage(
+    app: AppHandle,
+) -> Result<Vec<super::recovery::RawBlobScanResult>, AppError> {
+    let store_root = super::storage_root(&app)?;
+    super::recovery::scan_and_recover_raw_blobs(&store_root)
+}
+
+/// 여러 또는 모든 복구 가능한 노트를 일괄 TXT로 내보냅니다.
+#[tauri::command]
+pub async fn rescue_bulk_export_notes(
+    app: AppHandle,
+    destination_dir: Option<String>,
+) -> Result<Vec<String>, AppError> {
+    let pool = open_db_pool(&app).await?;
+    let store_root = super::storage_root(&app)?;
+    let target_dir = if let Some(d) = destination_dir {
+        PathBuf::from(d)
+    } else {
+        let dl = app
+            .path()
+            .download_dir()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        dl.join(format!("NotepadRescue_BulkExport_{ts}"))
+    };
+
+    let notes = repository::list_notes(&pool, &super::models::NoteFilter::default()).await?;
+    let mut exported_paths = Vec::new();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    for note in notes {
+        let detail =
+            super::recovery::get_note_recovery_detail(&pool, &store_root, &note.id).await?;
+        let snapshot = detail.latest_valid_snapshot.or(detail.latest_snapshot);
+        if let Some(s) = snapshot {
+            if let Some(text) = s.recovered_text {
+                let filename =
+                    super::recovery::sanitize_export_filename(&note.display_title, ts as i64);
+                let dest = target_dir.join(filename);
+                if let Ok(p) = super::recovery::write_atomic_txt(&dest, &text) {
+                    exported_paths.push(p.to_string_lossy().to_string());
+                }
+            }
+        }
     }
 
-    std::fs::write(&target_file, text.as_bytes())
-        .map_err(|e| AppError::Io(format!("텍스트 내보내기 실패: {e}")))?;
-
-    Ok(target_file.to_string_lossy().to_string())
+    Ok(exported_paths)
 }
 
 /// 임시 잔여 파일 정리 및 최신 스토리지 통계를 반환합니다.

@@ -15,9 +15,7 @@ use crate::error::AppError;
 pub static GC_MUTEX: std::sync::OnceLock<Arc<Mutex<()>>> = std::sync::OnceLock::new();
 
 pub fn get_gc_mutex() -> Arc<Mutex<()>> {
-    GC_MUTEX
-        .get_or_init(|| Arc::new(Mutex::new(())))
-        .clone()
+    GC_MUTEX.get_or_init(|| Arc::new(Mutex::new(()))).clone()
 }
 
 /// 임시 파일(.tmp) 안전 유예 기간: 1시간
@@ -244,8 +242,14 @@ pub fn verify_path_within_root(storage_root: &Path, target_path: &Path) -> Resul
         normalize_path(target_path)
     };
 
-    let root_str = norm_root.to_string_lossy().to_lowercase().replace('/', "\\");
-    let target_str = norm_target.to_string_lossy().to_lowercase().replace('/', "\\");
+    let root_str = norm_root
+        .to_string_lossy()
+        .to_lowercase()
+        .replace('/', "\\");
+    let target_str = norm_target
+        .to_string_lossy()
+        .to_lowercase()
+        .replace('/', "\\");
 
     let clean_root = root_str.trim_end_matches('\\');
 
@@ -278,12 +282,11 @@ pub async fn plan_gc(
     let mut plan = GcPlan::default();
 
     // 1. 활성/삭제 노트 조회
-    let notes_rows = sqlx::query(
-        "SELECT id, is_deleted, deleted_at FROM notepad_notes ORDER BY created_at ASC",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|e| AppError::Database(format!("노트 목록 조회 실패: {e}")))?;
+    let notes_rows =
+        sqlx::query("SELECT id, is_deleted, deleted_at FROM notepad_notes ORDER BY created_at ASC")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| AppError::Database(format!("노트 목록 조회 실패: {e}")))?;
 
     let active_retention_secs = (settings.retention_days as i64) * 86400;
     let deleted_retention_secs = (settings.deleted_retention_days as i64) * 86400;
@@ -436,7 +439,10 @@ async fn find_unreferenced_hashes(
 
     // 잔여 참조가 남아있는 해시들을 DB에서 역조회 (스냅샷 + 세션)
     let mut unreferenced = Vec::new();
-    let expired_set: HashSet<&str> = candidate_expired_snapshots.iter().map(|s| s.as_str()).collect();
+    let expired_set: HashSet<&str> = candidate_expired_snapshots
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
 
     for hash in candidate_hashes {
         // 1. 잔여 notepad_snapshots 참조 수 확인:
@@ -456,13 +462,12 @@ async fn find_unreferenced_hashes(
             .count();
 
         // 2. notepad_sessions 참조 수 확인
-        let session_ref_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM notepad_sessions WHERE content_hash = ?1",
-        )
-        .bind(&hash)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| AppError::Database(format!("세션 참조 확인 실패: {e}")))?;
+        let session_ref_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notepad_sessions WHERE content_hash = ?1")
+                .bind(&hash)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| AppError::Database(format!("세션 참조 확인 실패: {e}")))?;
 
         if alive_snaps == 0 && session_ref_count == 0 {
             unreferenced.push(hash);
@@ -536,13 +541,12 @@ pub async fn scan_orphan_blobs(
             .await
             .unwrap_or(1);
 
-            let in_sessions: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM notepad_sessions WHERE content_hash = ?1",
-            )
-            .bind(file_stem)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(1);
+            let in_sessions: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM notepad_sessions WHERE content_hash = ?1")
+                    .bind(file_stem)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap_or(1);
 
             if in_snapshots == 0 && in_sessions == 0 {
                 if let Ok(meta) = std::fs::metadata(&path) {
@@ -721,11 +725,10 @@ pub async fn get_storage_details(
     storage_root: &Path,
     settings: &NotepadRescueSettings,
 ) -> Result<StorageDetailDto, AppError> {
-    let logical_snapshot_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM notepad_snapshots")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0);
+    let logical_snapshot_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notepad_snapshots")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
 
     let logical_source_bytes: i64 =
         sqlx::query_scalar("SELECT COALESCE(SUM(source_size), 0) FROM notepad_snapshots")
@@ -783,7 +786,8 @@ pub async fn get_storage_details(
 mod tests {
     use super::*;
     use crate::notepad_rescue::models::{
-        NotepadNote, NotepadRescueSettings, NotepadSession, NotepadSnapshot, ParseStatus, SourceType,
+        NotepadNote, NotepadRescueSettings, NotepadSession, NotepadSnapshot, ParseStatus,
+        SourceType,
     };
     use crate::notepad_rescue::repository::{
         insert_session_snapshot, insert_snapshot_metadata, upsert_note,
@@ -839,7 +843,11 @@ mod tests {
         // 3. 경로 탈출 시도 (..) -> 차단
         let malicious_path = temp_dir.join("..").join("secret.txt");
         assert!(verify_path_within_root(&temp_dir, &malicious_path).is_err());
-        let deeper_malicious = temp_dir.join("snapshots").join("..").join("..").join("evil.txt");
+        let deeper_malicious = temp_dir
+            .join("snapshots")
+            .join("..")
+            .join("..")
+            .join("evil.txt");
         assert!(verify_path_within_root(&temp_dir, &deeper_malicious).is_err());
 
         // 4. 시스템 절대 경로 탈출 시도 -> 차단
@@ -876,7 +884,10 @@ mod tests {
         {
             // Windows에서 심볼릭 링크 생성이 권한(SeCreateSymbolicLinkPrivilege/개발자 모드)에 따라 제한될 수 있음
             if std::os::windows::fs::symlink_file(&actual_file, &symlink_path).is_ok() {
-                assert!(verify_path_within_root(&temp_dir, &symlink_path).is_err(), "심볼릭 링크 파일은 fail-closed로 거부되어야 함");
+                assert!(
+                    verify_path_within_root(&temp_dir, &symlink_path).is_err(),
+                    "심볼릭 링크 파일은 fail-closed로 거부되어야 함"
+                );
                 let _ = fs::remove_file(&symlink_path);
             }
         }
@@ -919,7 +930,9 @@ mod tests {
             let snap_old = NotepadSnapshot {
                 id: "snap_old".to_string(),
                 note_id: "note_active".to_string(),
-                content_hash: "hash_old_111111111111111111111111111111111111111111111111111111111111".to_string(),
+                content_hash:
+                    "hash_old_111111111111111111111111111111111111111111111111111111111111"
+                        .to_string(),
                 raw_snapshot_path: "snapshots/ha/hash_old.bin".to_string(),
                 recovered_text: Some("Old Content".to_string()),
                 source_type: SourceType::TabState,
@@ -937,7 +950,9 @@ mod tests {
             let snap_latest = NotepadSnapshot {
                 id: "snap_latest".to_string(),
                 note_id: "note_active".to_string(),
-                content_hash: "hash_latest_2222222222222222222222222222222222222222222222222222222222".to_string(),
+                content_hash:
+                    "hash_latest_2222222222222222222222222222222222222222222222222222222222"
+                        .to_string(),
                 raw_snapshot_path: "snapshots/ha/hash_latest.bin".to_string(),
                 recovered_text: Some("Latest Content".to_string()),
                 source_type: SourceType::TabState,
@@ -962,14 +977,20 @@ mod tests {
             let now_epoch = parse_timestamp_epoch("2026-10-01T00:00:00Z");
 
             // 46. Dry-run 검증: 변경사항 전혀 발생하지 않아야 함
-            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
             assert_eq!(plan.expired_snapshot_ids.len(), 1);
             assert_eq!(plan.expired_snapshot_ids[0], "snap_old");
             // 최신 스냅샷은 절대 만료 후보에 포함되지 않아야 함 (Invariant 29)
-            assert!(!plan.expired_snapshot_ids.contains(&"snap_latest".to_string()));
+            assert!(!plan
+                .expired_snapshot_ids
+                .contains(&"snap_latest".to_string()));
 
             // GC 실행
-            let report = execute_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            let report = execute_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
             assert_eq!(report.deleted_snapshots_count, 1);
             assert_eq!(report.deleted_blobs_count, 1);
 
@@ -979,7 +1000,10 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(remaining_snaps.len(), 1);
-            assert_eq!(remaining_snaps[0].try_get::<String, _>("id").unwrap(), "snap_latest");
+            assert_eq!(
+                remaining_snaps[0].try_get::<String, _>("id").unwrap(),
+                "snap_latest"
+            );
 
             // 디스크 확인: snap_latest 블롭 파일은 물리적으로 그대로 존재해야 함
             let rel_latest = super::super::snapshot::relative_blob_path(&snap_latest.content_hash);
@@ -987,7 +1011,9 @@ mod tests {
             assert!(abs_latest.exists());
 
             // 48. Idempotency 검증: 재실행 시 0개 삭제
-            let report_2 = execute_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            let report_2 = execute_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
             assert_eq!(report_2.deleted_snapshots_count, 0);
             assert_eq!(report_2.deleted_blobs_count, 0);
 
@@ -1038,7 +1064,9 @@ mod tests {
             let snap_old = NotepadSnapshot {
                 id: "snap_del_old".to_string(),
                 note_id: "note_del_old".to_string(),
-                content_hash: "hash_del_old_33333333333333333333333333333333333333333333333333333333".to_string(),
+                content_hash:
+                    "hash_del_old_33333333333333333333333333333333333333333333333333333333"
+                        .to_string(),
                 raw_snapshot_path: "snapshots/33/del_old.bin".to_string(),
                 recovered_text: Some("Del Old".to_string()),
                 source_type: SourceType::TabState,
@@ -1060,13 +1088,19 @@ mod tests {
             };
 
             let now_epoch = parse_timestamp_epoch("2026-10-01T00:00:00Z");
-            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
 
             // note_del_old는 제거 대상, note_del_recent는 보존
             assert!(plan.expired_note_ids.contains(&"note_del_old".to_string()));
-            assert!(!plan.expired_note_ids.contains(&"note_del_recent".to_string()));
+            assert!(!plan
+                .expired_note_ids
+                .contains(&"note_del_recent".to_string()));
 
-            execute_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            execute_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
 
             // note_del_recent는 DB에 그대로 남아 있어야 함
             let notes = sqlx::query("SELECT id FROM notepad_notes WHERE id = 'note_del_recent'")
@@ -1087,7 +1121,8 @@ mod tests {
             let _ = fs::remove_dir_all(&temp_dir);
             let _ = fs::create_dir_all(&temp_dir);
 
-            let shared_hash = "shared_hash_444444444444444444444444444444444444444444444444444444444".to_string();
+            let shared_hash =
+                "shared_hash_444444444444444444444444444444444444444444444444444444444".to_string();
             let blob_path = create_test_blob(&temp_dir, &shared_hash, b"Shared Content");
 
             let note1 = NotepadNote {
@@ -1163,11 +1198,18 @@ mod tests {
             let now_epoch = parse_timestamp_epoch("2026-10-01T00:00:00Z");
 
             // GC 계획: snap1은 만료 대상이지만 shared_hash는 snap2가 참조 중이므로 블롭 삭제 목록에 포함되지 않아야 함!
-            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
             assert_eq!(plan.expired_snapshot_ids, vec!["snap1".to_string()]);
-            assert!(plan.unreferenced_blob_hashes.is_empty(), "다른 스냅샷이 참조 중인 공유 블롭은 삭제 목록에 포함되면 안 됨");
+            assert!(
+                plan.unreferenced_blob_hashes.is_empty(),
+                "다른 스냅샷이 참조 중인 공유 블롭은 삭제 목록에 포함되면 안 됨"
+            );
 
-            execute_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            execute_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
 
             // 물리 파일 여전히 보존 확인
             assert!(blob_path.exists(), "공유 블롭은 물리적으로 보존되어야 함");
@@ -1184,7 +1226,8 @@ mod tests {
             let _ = fs::remove_dir_all(&temp_dir);
             let _ = fs::create_dir_all(&temp_dir);
 
-            let session_hash = "session_hash_5555555555555555555555555555555555555555555555555555555".to_string();
+            let session_hash =
+                "session_hash_5555555555555555555555555555555555555555555555555555555".to_string();
             let blob_path = create_test_blob(&temp_dir, &session_hash, b"Session Data");
 
             // 세션(WindowState)에 동일 해시 등록
@@ -1239,12 +1282,19 @@ mod tests {
             let now_epoch = parse_timestamp_epoch("2026-10-01T00:00:00Z");
 
             // 스냅샷은 만료되지만 세션이 동일 해시를 참조하므로 블롭은 보존되어야 함!
-            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
+            let plan = plan_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
             assert_eq!(plan.expired_snapshot_ids, vec!["snap_del".to_string()]);
             assert!(plan.unreferenced_blob_hashes.is_empty());
 
-            execute_gc(&pool, &temp_dir, &settings, now_epoch).await.unwrap();
-            assert!(blob_path.exists(), "세션이 참조 중인 CAS 블롭은 삭제되면 안 됨");
+            execute_gc(&pool, &temp_dir, &settings, now_epoch)
+                .await
+                .unwrap();
+            assert!(
+                blob_path.exists(),
+                "세션이 참조 중인 CAS 블롭은 삭제되면 안 됨"
+            );
 
             let _ = fs::remove_dir_all(&temp_dir);
         });
@@ -1283,11 +1333,19 @@ mod tests {
             create_test_blob(&temp_dir, orphan_hash, b"Orphan Data");
 
             // 24시간 유예 기간 적용 시 방금 생성된 고아 블롭은 삭제 대상에 포함되지 않아야 함 (Invariant 39)
-            let (orphans, _) = scan_orphan_blobs(&pool, &temp_dir, Duration::from_secs(86400)).await.unwrap();
-            assert!(orphans.is_empty(), "24시간 이내의 고아 블롭은 유예 기간 동안 보존되어야 함");
+            let (orphans, _) = scan_orphan_blobs(&pool, &temp_dir, Duration::from_secs(86400))
+                .await
+                .unwrap();
+            assert!(
+                orphans.is_empty(),
+                "24시간 이내의 고아 블롭은 유예 기간 동안 보존되어야 함"
+            );
 
             // 유예 기간 경과(0초) 후에는 삭제 대상에 포함 (Invariant 40)
-            let (orphans_expired, bytes) = scan_orphan_blobs(&pool, &temp_dir, Duration::from_secs(0)).await.unwrap();
+            let (orphans_expired, bytes) =
+                scan_orphan_blobs(&pool, &temp_dir, Duration::from_secs(0))
+                    .await
+                    .unwrap();
             assert_eq!(orphans_expired.len(), 1);
             assert!(bytes > 0);
 
@@ -1316,8 +1374,13 @@ mod tests {
             };
 
             let now_epoch = parse_timestamp_epoch("2026-10-01T00:00:00Z");
-            let plan = plan_gc(&pool, &temp_dir, &settings_pressure, now_epoch).await.unwrap();
-            assert!(plan.has_quota_pressure, "쿼터를 초과하고 안전 정리가 불가능한 경우 QUOTA_PRESSURE가 보고되어야 함");
+            let plan = plan_gc(&pool, &temp_dir, &settings_pressure, now_epoch)
+                .await
+                .unwrap();
+            assert!(
+                plan.has_quota_pressure,
+                "쿼터를 초과하고 안전 정리가 불가능한 경우 QUOTA_PRESSURE가 보고되어야 함"
+            );
 
             // 쿼터 10MB 설정 -> 쿼터 여유
             let settings_ok = NotepadRescueSettings {
@@ -1326,7 +1389,9 @@ mod tests {
                 max_storage_bytes: 10_000_000,
                 ..Default::default()
             };
-            let plan_ok = plan_gc(&pool, &temp_dir, &settings_ok, now_epoch).await.unwrap();
+            let plan_ok = plan_gc(&pool, &temp_dir, &settings_ok, now_epoch)
+                .await
+                .unwrap();
             assert!(!plan_ok.has_quota_pressure);
 
             let _ = fs::remove_dir_all(&temp_dir);

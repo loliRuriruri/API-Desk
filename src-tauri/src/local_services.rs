@@ -63,7 +63,8 @@ pub fn definitions() -> Vec<LocalServiceDefinition> {
     vec![LocalServiceDefinition {
         id: "laya".into(),
         label: "Laya".into(),
-        description: "Laya 로컬 AI 서비스 (FastAPI 계열 추정) · API Desk에서 실행/중지/상태 확인".into(),
+        description: "Laya 로컬 AI 서비스 (FastAPI 계열 추정) · API Desk에서 실행/중지/상태 확인"
+            .into(),
         default_endpoint: "http://127.0.0.1:8000".into(),
         default_port: 8000,
         default_device: "cuda".into(),
@@ -220,7 +221,10 @@ fn set_api_key_configured(app: &AppHandle, id: &str, configured: bool) -> Result
     write_configs(app, &stored)
 }
 
-fn merged_config(app: &AppHandle, id: &str) -> Result<(LocalServiceDefinition, ServiceConfig), AppError> {
+fn merged_config(
+    app: &AppHandle,
+    id: &str,
+) -> Result<(LocalServiceDefinition, ServiceConfig), AppError> {
     let def = definition(id)
         .ok_or_else(|| AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {id}")))?;
     let stored = read_configs(app)
@@ -288,8 +292,6 @@ impl LocalServicesState {
             .map(|buffer| buffer.len())
             .unwrap_or(0)
     }
-
-
 }
 
 struct ManagedProcess {
@@ -492,7 +494,8 @@ fn start_block_reason(
         }
         if !key_present {
             return Some(
-                "저장된 API 키를 Vault에서 찾을 수 없습니다. 키를 다시 저장하거나 삭제하세요".into(),
+                "저장된 API 키를 Vault에서 찾을 수 없습니다. 키를 다시 저장하거나 삭제하세요"
+                    .into(),
             );
         }
     }
@@ -669,8 +672,9 @@ pub(crate) fn save_service_config(
     environment_version: Option<&str>,
     environment_kind: &str,
 ) -> Result<(), AppError> {
-    let def = definition(&config.id)
-        .ok_or_else(|| AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id)))?;
+    let def = definition(&config.id).ok_or_else(|| {
+        AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id))
+    })?;
     let mut merged = config.merged(&def);
     if merged.environment_version.trim().is_empty() {
         if let Some(version) = environment_version {
@@ -698,9 +702,13 @@ pub(crate) fn save_service_config(
     Ok(())
 }
 
-pub(crate) fn restore_service_config(app: &AppHandle, config: ServiceConfig) -> Result<(), AppError> {
-    let def = definition(&config.id)
-        .ok_or_else(|| AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id)))?;
+pub(crate) fn restore_service_config(
+    app: &AppHandle,
+    config: ServiceConfig,
+) -> Result<(), AppError> {
+    let def = definition(&config.id).ok_or_else(|| {
+        AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id))
+    })?;
     let merged = config.merged(&def);
     let mut stored = read_configs(app);
     stored.retain(|item| item.id != merged.id);
@@ -728,7 +736,10 @@ pub(crate) fn start_service_for_activation(app: &AppHandle, id: &str) -> Result<
     let vault = app.state::<VaultState>();
     let status = start_service(app, &state, &vault, id)?;
     if status.state != "running" && status.state != "starting" {
-        return Err(AppError::InvalidRequest(format!("서비스 시작 실패: {}", status.state)));
+        return Err(AppError::InvalidRequest(format!(
+            "서비스 시작 실패: {}",
+            status.state
+        )));
     }
     Ok(())
 }
@@ -762,8 +773,9 @@ pub fn local_service_save_config(
     app: AppHandle,
     config: ServiceConfig,
 ) -> Result<Vec<ServiceConfig>, AppError> {
-    let def = definition(&config.id)
-        .ok_or_else(|| AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id)))?;
+    let def = definition(&config.id).ok_or_else(|| {
+        AppError::InvalidRequest(format!("알 수 없는 로컬 서비스입니다: {}", config.id))
+    })?;
     let merged = config.merged(&def);
     let mut stored = read_configs(&app);
     stored.retain(|item| item.id != merged.id);
@@ -872,10 +884,20 @@ fn start_service(
         .map_err(|e| AppError::Io(format!("서비스 실행에 실패했습니다: {e}")))?;
     let pid = child.id();
     if let Some(stdout) = child.stdout.take() {
-        spawn_log_reader(app.clone(), id.to_string(), stdout, secret.clone().into_iter().collect());
+        spawn_log_reader(
+            app.clone(),
+            id.to_string(),
+            stdout,
+            secret.clone().into_iter().collect(),
+        );
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_log_reader(app.clone(), id.to_string(), stderr, secret.clone().into_iter().collect());
+        spawn_log_reader(
+            app.clone(),
+            id.to_string(),
+            stderr,
+            secret.clone().into_iter().collect(),
+        );
     }
 
     let started_unix = unix_now();
@@ -963,7 +985,10 @@ fn restart_service(
 }
 
 #[tauri::command]
-pub async fn local_service_start(app: AppHandle, id: String) -> Result<LocalServiceStatus, AppError> {
+pub async fn local_service_start(
+    app: AppHandle,
+    id: String,
+) -> Result<LocalServiceStatus, AppError> {
     let handle = app.clone();
     let status = tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<LocalServicesState>();
@@ -977,7 +1002,10 @@ pub async fn local_service_start(app: AppHandle, id: String) -> Result<LocalServ
 }
 
 #[tauri::command]
-pub async fn local_service_stop(app: AppHandle, id: String) -> Result<LocalServiceStatus, AppError> {
+pub async fn local_service_stop(
+    app: AppHandle,
+    id: String,
+) -> Result<LocalServiceStatus, AppError> {
     let handle = app.clone();
     let status = tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<LocalServicesState>();
@@ -991,7 +1019,10 @@ pub async fn local_service_stop(app: AppHandle, id: String) -> Result<LocalServi
 }
 
 #[tauri::command]
-pub async fn local_service_restart(app: AppHandle, id: String) -> Result<LocalServiceStatus, AppError> {
+pub async fn local_service_restart(
+    app: AppHandle,
+    id: String,
+) -> Result<LocalServiceStatus, AppError> {
     let handle = app.clone();
     let status = tauri::async_runtime::spawn_blocking(move || {
         let state = handle.state::<LocalServicesState>();
@@ -1164,7 +1195,8 @@ pub fn local_service_login_startup_plan(id: String) -> Result<LoginStartupPlan, 
         service_id: def.id.clone(),
         method: LoginStartupMethod::None,
         supported: def.supports_login_startup,
-        detail: "Windows 로그인 시 자동 실행은 아직 구현되지 않았습니다 (인터페이스만 준비됨)".into(),
+        detail: "Windows 로그인 시 자동 실행은 아직 구현되지 않았습니다 (인터페이스만 준비됨)"
+            .into(),
     })
 }
 
@@ -1217,7 +1249,10 @@ mod tests {
         assert_eq!(map.get("USE_TF").map(String::as_str), Some("0"));
         assert_eq!(map.get("LAYA_PRELOAD").map(String::as_str), Some("1"));
         assert_eq!(map.get("LAYA_DEVICE").map(String::as_str), Some("cuda"));
-        assert_eq!(map.get("LAYA_API_KEY").map(String::as_str), Some("secret-key"));
+        assert_eq!(
+            map.get("LAYA_API_KEY").map(String::as_str),
+            Some("secret-key")
+        );
     }
 
     #[test]
@@ -1282,9 +1317,21 @@ mod tests {
     fn derives_service_state() {
         assert_eq!(service_state_from(None, None, false).0, "stopped");
         assert_eq!(service_state_from(None, Some(1234), true).0, "running");
-        assert_eq!(service_state_from(Some((10, unix_now(), None)), None, false).0, "starting");
-        assert_eq!(service_state_from(Some((10, unix_now(), None)), None, true).0, "running");
-        assert_eq!(service_state_from(Some((10, unix_now(), Some(0))), None, false).0, "stopped");
-        assert_eq!(service_state_from(Some((10, unix_now(), Some(1))), None, false).0, "error");
+        assert_eq!(
+            service_state_from(Some((10, unix_now(), None)), None, false).0,
+            "starting"
+        );
+        assert_eq!(
+            service_state_from(Some((10, unix_now(), None)), None, true).0,
+            "running"
+        );
+        assert_eq!(
+            service_state_from(Some((10, unix_now(), Some(0))), None, false).0,
+            "stopped"
+        );
+        assert_eq!(
+            service_state_from(Some((10, unix_now(), Some(1))), None, false).0,
+            "error"
+        );
     }
 }

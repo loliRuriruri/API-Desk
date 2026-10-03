@@ -128,10 +128,7 @@ impl MetaCache {
             parent: identity.parent,
             ancestor_names,
             name: if identity.name.is_empty() {
-                exe_path
-                    .as_deref()
-                    .map(base_name)
-                    .unwrap_or_default()
+                exe_path.as_deref().map(base_name).unwrap_or_default()
             } else {
                 identity.name
             },
@@ -469,18 +466,12 @@ fn read_version_info(path: &str) -> VersionInfo {
         let block_wide = wide(block);
         let mut buffer: *mut c_void = std::ptr::null_mut();
         let mut length: u32 = 0;
-        let ok = unsafe {
-            VerQueryValueW(
-                data,
-                block_wide.as_ptr(),
-                &mut buffer,
-                &mut length,
-            )
-        };
+        let ok = unsafe { VerQueryValueW(data, block_wide.as_ptr(), &mut buffer, &mut length) };
         if ok == 0 || buffer.is_null() || length == 0 {
             return None;
         }
-        let wide_slice = unsafe { std::slice::from_raw_parts(buffer as *const u16, length as usize) };
+        let wide_slice =
+            unsafe { std::slice::from_raw_parts(buffer as *const u16, length as usize) };
         let text = String::from_utf16_lossy(wide_slice)
             .trim_matches('\0')
             .trim()
@@ -503,7 +494,13 @@ fn read_version_info(path: &str) -> VersionInfo {
             return VersionInfo::default();
         }
         let mut data = vec![0u8; size as usize];
-        if GetFileVersionInfoW(path_wide.as_ptr(), 0, size, data.as_mut_ptr() as *mut c_void) == 0 {
+        if GetFileVersionInfoW(
+            path_wide.as_ptr(),
+            0,
+            size,
+            data.as_mut_ptr() as *mut c_void,
+        ) == 0
+        {
             return VersionInfo::default();
         }
         let data_ptr = data.as_ptr() as *const c_void;
@@ -518,7 +515,8 @@ fn read_version_info(path: &str) -> VersionInfo {
                 && !buffer.is_null()
                 && length >= 4
             {
-                let values = std::slice::from_raw_parts(buffer as *const u16, (length / 2) as usize);
+                let values =
+                    std::slice::from_raw_parts(buffer as *const u16, (length / 2) as usize);
                 let language = values[0];
                 let codepage = values[1];
                 prefixes.push(format!("{language:04X}{codepage:04X}"));
@@ -542,8 +540,10 @@ fn read_version_info(path: &str) -> VersionInfo {
                 );
             }
             if info.company_name.is_none() {
-                info.company_name =
-                    query(data_ptr, &format!("\\StringFileInfo\\{prefix}\\CompanyName"));
+                info.company_name = query(
+                    data_ptr,
+                    &format!("\\StringFileInfo\\{prefix}\\CompanyName"),
+                );
             }
             if info.product_name.is_some()
                 && info.file_description.is_some()

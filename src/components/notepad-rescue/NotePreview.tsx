@@ -2,7 +2,9 @@ import { useState, useEffect } from "react";
 import {
   type NoteSummaryDto,
   type NotepadSnapshot,
+  type NoteRecoveryDetailDto,
   getSnapshot,
+  getRecoveryDetail,
   exportText,
   openExportedNote,
   formatBytes,
@@ -25,16 +27,18 @@ export function NotePreview({
   showHistory,
 }: NotePreviewProps) {
   const [snapshot, setSnapshot] = useState<NotepadSnapshot | null>(null);
+  const [recoveryDetail, setRecoveryDetail] = useState<NoteRecoveryDetailDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportedPath, setExportedPath] = useState<string | null>(null);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
-  // Fetch full snapshot when note changes or lastSnapshotId updates
+  // Fetch full snapshot and recovery detail when note changes or lastSnapshotId updates
   useEffect(() => {
     if (!note || !note.lastSnapshotId) {
       setSnapshot(null);
+      setRecoveryDetail(null);
       setExportedPath(null);
       return;
     }
@@ -44,10 +48,14 @@ export function NotePreview({
     setExportedPath(null);
     setFeedbackMsg(null);
 
-    getSnapshot(note.lastSnapshotId)
-      .then((data) => {
+    Promise.all([
+      getSnapshot(note.lastSnapshotId),
+      getRecoveryDetail(note.id).catch(() => null),
+    ])
+      .then(([snapData, detailData]) => {
         if (active) {
-          setSnapshot(data);
+          setSnapshot(snapData);
+          setRecoveryDetail(detailData);
           setLoading(false);
         }
       })
@@ -114,6 +122,21 @@ export function NotePreview({
   const linesCount = textContent ? textContent.split("\n").length : 0;
   const charsCount = textContent ? textContent.length : 0;
 
+  const confidenceInfo = (() => {
+    switch (recoveryDetail?.latestConfidence) {
+      case "FULL":
+        return { label: "✓ 완전 복구 가능", tone: "ok" as const };
+      case "TEXT_ONLY":
+        return { label: "⚠ 텍스트 복구 (원시 유실)", tone: "warn" as const };
+      case "RAW_ONLY":
+        return { label: "⚠ 원시 백업 보존", tone: "info" as const };
+      case "UNAVAILABLE":
+        return { label: "✕ 복구 불가", tone: "danger" as const };
+      default:
+        return null;
+    }
+  })();
+
   return (
     <div className="notepad-rescue-preview-container">
       {/* Top Header */}
@@ -131,6 +154,9 @@ export function NotePreview({
               <Badge tone="warn">미저장 탭</Badge>
             )}
             <Badge tone={parseStatusInfo.tone}>{parseStatusInfo.label}</Badge>
+            {confidenceInfo && (
+              <Badge tone={confidenceInfo.tone}>{confidenceInfo.label}</Badge>
+            )}
           </div>
 
           {note.originalPath && (
@@ -161,6 +187,17 @@ export function NotePreview({
 
         {/* Action Buttons */}
         <div className="preview-header-actions">
+          {recoveryDetail?.latestValidSnapshot && snapshot?.id !== recoveryDetail.latestValidSnapshot.id && (
+            <button
+              type="button"
+              className="button button-accent"
+              onClick={() => setSnapshot(recoveryDetail.latestValidSnapshot!)}
+              title="가장 최근 정상적으로 파싱된 유효 버전을 불러옵니다"
+            >
+              최신 유효 복구
+            </button>
+          )}
+
           <button
             type="button"
             className="button"
@@ -209,6 +246,42 @@ export function NotePreview({
         </div>
       )}
 
+      {/* Deleted Note Recovery Status Banner */}
+      {note.isDeleted && (
+        <div
+          style={{
+            background: "rgba(239, 68, 68, 0.08)",
+            border: "1px solid rgba(239, 68, 68, 0.25)",
+            borderRadius: 6,
+            padding: "10px 14px",
+            marginBottom: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <div>
+            <div style={{ fontWeight: 600, color: "#f87171", fontSize: "0.85rem" }}>
+              ⚠️ 메모장에서 닫힘 / 삭제됨 (Deleted from Notepad) — 백업본 복구 가능 (Backup available)
+            </div>
+            <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: 2 }}>
+              Notepad Rescue에 보관된 백업을 안전하게 복구하거나 파일로 내보낼 수 있습니다. (원본 메모장 세션 파일은 변경되지 않습니다)
+            </div>
+          </div>
+          {recoveryDetail?.latestValidSnapshot && snapshot?.id !== recoveryDetail.latestValidSnapshot.id && (
+            <button
+              type="button"
+              className="button button-accent"
+              style={{ fontSize: "0.8rem", padding: "4px 10px" }}
+              onClick={() => setSnapshot(recoveryDetail.latestValidSnapshot!)}
+              title="가장 최근 정상적으로 파싱된 텍스트 스냅샷을 불러옵니다"
+            >
+              최신 유효 버전 복구
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Parse Error Banner */}
       {snapshot && snapshot.parseStatus !== "PARSED" && (
         <div className="preview-warning-banner">
@@ -217,6 +290,18 @@ export function NotePreview({
           <div className="banner-subtext">
             RAW 바이너리 스냅샷 파일(<code>{snapshot.rawSnapshotPath}</code>)은 손실 없이 보존되어 있습니다.
           </div>
+          {recoveryDetail?.latestValidSnapshot && (
+            <div style={{ marginTop: 8 }}>
+              <button
+                type="button"
+                className="button button-accent"
+                style={{ fontSize: "0.8rem", padding: "4px 10px" }}
+                onClick={() => setSnapshot(recoveryDetail.latestValidSnapshot!)}
+              >
+                마지막 정상 버전 복구 ({formatRelativeTime(recoveryDetail.latestValidSnapshot.capturedAt)})
+              </button>
+            </div>
+          )}
         </div>
       )}
 

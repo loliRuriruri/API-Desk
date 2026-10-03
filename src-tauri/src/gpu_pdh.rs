@@ -165,7 +165,13 @@ pub fn merge_engine_samples(
     map
 }
 
-pub fn apply_memory_sample(map: &mut HashMap<u32, PdhProcess>, pid: u32, luid: u64, dedicated: bool, bytes: u64) {
+pub fn apply_memory_sample(
+    map: &mut HashMap<u32, PdhProcess>,
+    pid: u32,
+    luid: u64,
+    dedicated: bool,
+    bytes: u64,
+) {
     let entry = map.entry(pid).or_default();
     entry.luid = luid;
     if dedicated {
@@ -253,9 +259,7 @@ pub fn collect() -> PdhSnapshot {
 
 #[cfg(windows)]
 fn open_query() -> Option<QueryHandles> {
-    let wide = |text: &str| -> Vec<u16> {
-        text.encode_utf16().chain(std::iter::once(0)).collect()
-    };
+    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
     unsafe {
         let mut query: isize = 0;
         if ffi::PdhOpenQueryW(std::ptr::null(), 0, &mut query) != 0 {
@@ -393,7 +397,10 @@ mod tests {
             Some(("3D".to_string(), 40.0)),
             "헤드라인은 합산이 아니라 가장 바쁜 엔진"
         );
-        assert_eq!(merged.get(&11).unwrap().headline_percent(), Some(("Compute".to_string(), 88.0)));
+        assert_eq!(
+            merged.get(&11).unwrap().headline_percent(),
+            Some(("Compute".to_string(), 88.0))
+        );
     }
 
     #[test]

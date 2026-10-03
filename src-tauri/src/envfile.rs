@@ -8,7 +8,11 @@ use crate::vault::{self, VaultState};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnvLine {
-    Assignment { name: String, value: String, raw: String },
+    Assignment {
+        name: String,
+        value: String,
+        raw: String,
+    },
     Other(String),
 }
 
@@ -60,7 +64,10 @@ pub fn parse_env(content: &str) -> Vec<EnvLine> {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 return EnvLine::Other(line.to_string());
             }
-            let body = trimmed.strip_prefix("export ").unwrap_or(trimmed).trim_start();
+            let body = trimmed
+                .strip_prefix("export ")
+                .unwrap_or(trimmed)
+                .trim_start();
             let Some(eq) = body.find('=') else {
                 return EnvLine::Other(line.to_string());
             };
@@ -186,14 +193,20 @@ pub fn merge_env(existing: &str, updates: &[(String, Option<String>)]) -> MergeO
 
 fn validate_project_dir(project_path: &str) -> Result<PathBuf, AppError> {
     if project_path.trim().is_empty() {
-        return Err(AppError::InvalidPath("프로젝트 경로가 비어 있습니다".into()));
+        return Err(AppError::InvalidPath(
+            "프로젝트 경로가 비어 있습니다".into(),
+        ));
     }
     let path = Path::new(project_path);
     if !path.exists() {
-        return Err(AppError::InvalidPath(format!("경로가 존재하지 않습니다: {project_path}")));
+        return Err(AppError::InvalidPath(format!(
+            "경로가 존재하지 않습니다: {project_path}"
+        )));
     }
     if !path.is_dir() {
-        return Err(AppError::InvalidPath(format!("폴더가 아닙니다: {project_path}")));
+        return Err(AppError::InvalidPath(format!(
+            "폴더가 아닙니다: {project_path}"
+        )));
     }
     path.canonicalize()
         .map_err(|e| AppError::InvalidPath(format!("{project_path}: {e}")))
@@ -286,7 +299,9 @@ pub fn import_env_values(
     let mut results = Vec::new();
     for target in targets {
         let found = parsed.iter().find_map(|line| match line {
-            EnvLine::Assignment { name, value, .. } if name.eq_ignore_ascii_case(&target.var_name) => {
+            EnvLine::Assignment { name, value, .. }
+                if name.eq_ignore_ascii_case(&target.var_name) =>
+            {
                 Some(value.clone())
             }
             _ => None,
@@ -517,23 +532,45 @@ mod tests {
     fn merges_and_preserves_unknown_lines() {
         let existing = "# db settings\nDATABASE_URL=postgres://localhost\nOPENROUTER_API_KEY=old\n";
         let updates = vec![
-            ("OPENROUTER_API_KEY".to_string(), Some(FAKE_SECRET.to_string())),
-            ("OPENAI_API_KEY".to_string(), Some("second-fake-value".to_string())),
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                Some(FAKE_SECRET.to_string()),
+            ),
+            (
+                "OPENAI_API_KEY".to_string(),
+                Some("second-fake-value".to_string()),
+            ),
             ("MISSING".to_string(), None),
         ];
         let outcome = merge_env(existing, &updates);
         assert!(outcome.changed);
         assert!(outcome.content.contains("# db settings"));
-        assert!(outcome.content.contains("DATABASE_URL=postgres://localhost"));
-        assert!(outcome.content.contains(&format!("OPENROUTER_API_KEY={FAKE_SECRET}")));
+        assert!(outcome
+            .content
+            .contains("DATABASE_URL=postgres://localhost"));
+        assert!(outcome
+            .content
+            .contains(&format!("OPENROUTER_API_KEY={FAKE_SECRET}")));
         assert!(outcome.content.contains("OPENAI_API_KEY=second-fake-value"));
-        assert!(outcome.content.contains("OPENROUTER_API_KEY=") && !outcome.content.contains("OPENROUTER_API_KEY=old"));
+        assert!(
+            outcome.content.contains("OPENROUTER_API_KEY=")
+                && !outcome.content.contains("OPENROUTER_API_KEY=old")
+        );
         assert_eq!(
             outcome.diff,
             vec![
-                DiffEntry { name: "OPENROUTER_API_KEY".into(), action: "update" },
-                DiffEntry { name: "OPENAI_API_KEY".into(), action: "add" },
-                DiffEntry { name: "MISSING".into(), action: "missing" },
+                DiffEntry {
+                    name: "OPENROUTER_API_KEY".into(),
+                    action: "update"
+                },
+                DiffEntry {
+                    name: "OPENAI_API_KEY".into(),
+                    action: "add"
+                },
+                DiffEntry {
+                    name: "MISSING".into(),
+                    action: "missing"
+                },
             ]
         );
     }
@@ -550,9 +587,15 @@ mod tests {
 
     #[test]
     fn quotes_values_that_need_it() {
-        assert_eq!(format_assignment("KEY", "simple-value_1"), "KEY=simple-value_1");
+        assert_eq!(
+            format_assignment("KEY", "simple-value_1"),
+            "KEY=simple-value_1"
+        );
         assert_eq!(format_assignment("KEY", "has space"), "KEY=\"has space\"");
-        assert_eq!(format_assignment("KEY", "quote\"inside"), "KEY=\"quote\\\"inside\"");
+        assert_eq!(
+            format_assignment("KEY", "quote\"inside"),
+            "KEY=\"quote\\\"inside\""
+        );
         assert_eq!(format_assignment("KEY", ""), "KEY=\"\"");
     }
 
@@ -618,8 +661,14 @@ mod tests {
         assert_eq!(files.len(), 2);
         let env_file = files.iter().find(|file| file.file_name == ".env").unwrap();
         assert!(env_file.variables.iter().any(|name| name == "DATABASE_URL"));
-        assert!(env_file.variables.iter().any(|name| name == "OPENAI_API_KEY"));
-        assert!(!env_file.variables.iter().any(|name| name.contains("secret")));
+        assert!(env_file
+            .variables
+            .iter()
+            .any(|name| name == "OPENAI_API_KEY"));
+        assert!(!env_file
+            .variables
+            .iter()
+            .any(|name| name.contains("secret")));
 
         let entries = vec![
             EnvEntry {

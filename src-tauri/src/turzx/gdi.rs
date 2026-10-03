@@ -156,7 +156,14 @@ impl Canvas {
                 colors: [0; 3],
             };
             let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+            let bitmap = CreateDIBSection(
+                dc,
+                &info,
+                DIB_RGB_COLORS,
+                &mut bits,
+                std::ptr::null_mut(),
+                0,
+            );
             let previous = SelectObject(dc, bitmap);
             let size = width as usize * height as usize * 3;
             Canvas {
@@ -175,7 +182,12 @@ impl Canvas {
         use win::*;
         unsafe {
             let brush = CreateSolidBrush(colorref(color));
-            let rect = Rect { left: 0, top: 0, right: self.width, bottom: self.height };
+            let rect = Rect {
+                left: 0,
+                top: 0,
+                right: self.width,
+                bottom: self.height,
+            };
             FillRect(self.dc, &rect, brush);
             DeleteObject(brush);
         }
@@ -185,13 +197,26 @@ impl Canvas {
         use win::*;
         unsafe {
             let brush = CreateSolidBrush(colorref(color));
-            let rect = Rect { left: x, top: y, right: x + width, bottom: y + height };
+            let rect = Rect {
+                left: x,
+                top: y,
+                right: x + width,
+                bottom: y + height,
+            };
             FillRect(self.dc, &rect, brush);
             DeleteObject(brush);
         }
     }
 
-    pub fn round_rect(&mut self, x: i32, y: i32, width: i32, height: i32, radius: i32, color: (u8, u8, u8)) {
+    pub fn round_rect(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        radius: i32,
+        color: (u8, u8, u8),
+    ) {
         use win::*;
         unsafe {
             let brush = CreateSolidBrush(colorref(color));
@@ -240,7 +265,12 @@ impl Canvas {
             let previous = SelectObject(self.dc, font);
             let utf16 = wide(text);
             let mut size_struct = Size { cx: 0, cy: 0 };
-            GetTextExtentPoint32W(self.dc, utf16.as_ptr(), utf16.len() as i32, &mut size_struct);
+            GetTextExtentPoint32W(
+                self.dc,
+                utf16.as_ptr(),
+                utf16.len() as i32,
+                &mut size_struct,
+            );
             SelectObject(self.dc, previous);
             DeleteObject(font);
             size_struct.cx
@@ -283,7 +313,15 @@ impl Canvas {
         }
     }
 
-    pub fn text_right(&mut self, text: &str, right: i32, y: i32, size: i32, color: (u8, u8, u8), bold: bool) {
+    pub fn text_right(
+        &mut self,
+        text: &str,
+        right: i32,
+        y: i32,
+        size: i32,
+        color: (u8, u8, u8),
+        bold: bool,
+    ) {
         let width = self.text_width(text, size, bold);
         self.text(text, right - width, y, size, color, bold);
     }
@@ -363,7 +401,17 @@ impl Canvas {
     pub fn text_width(&self, text: &str, size: i32, _bold: bool) -> i32 {
         (text.chars().count() as i32) * (size / 2)
     }
-    pub fn bar(&mut self, _x: i32, _y: i32, _w: i32, _h: i32, _p: f64, _f: (u8, u8, u8), _b: (u8, u8, u8)) {}
+    pub fn bar(
+        &mut self,
+        _x: i32,
+        _y: i32,
+        _w: i32,
+        _h: i32,
+        _p: f64,
+        _f: (u8, u8, u8),
+        _b: (u8, u8, u8),
+    ) {
+    }
     pub fn finish(&mut self) -> &[u8] {
         &self.pixels
     }

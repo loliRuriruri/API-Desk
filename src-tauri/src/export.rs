@@ -32,11 +32,7 @@ pub struct ExportResult {
 }
 
 pub fn csv_field(value: &str) -> String {
-    if value.contains(',')
-        || value.contains('"')
-        || value.contains('\n')
-        || value.contains('\r')
-    {
+    if value.contains(',') || value.contains('"') || value.contains('\n') || value.contains('\r') {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_string()
@@ -197,7 +193,10 @@ mod tests {
         assert!(csv.starts_with('\u{feff}'));
         assert!(csv.contains("provider,account,credential,field"));
         assert!(csv.contains("test-secret-not-a-real-key"));
-        assert!(csv.contains("\"MikuChat (코딩 에이전트)\"") || csv.contains("MikuChat (코딩 에이전트)"));
+        assert!(
+            csv.contains("\"MikuChat (코딩 에이전트)\"")
+                || csv.contains("MikuChat (코딩 에이전트)")
+        );
         assert!(csv.ends_with("\r\n"));
     }
 
@@ -205,7 +204,13 @@ mod tests {
     fn txt_marks_missing_secrets() {
         let rows = vec![
             (sample(), Some("test-secret-not-a-real-key".into())),
-            (ExportEntry { name: "Gone".into(), ..sample() }, None),
+            (
+                ExportEntry {
+                    name: "Gone".into(),
+                    ..sample()
+                },
+                None,
+            ),
         ];
         let txt = format_txt(&rows);
         assert!(txt.contains("test-secret-not-a-real-key"));

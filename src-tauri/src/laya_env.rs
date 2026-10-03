@@ -502,7 +502,12 @@ fn run_hidden(program: &str, args: &[&str]) -> Result<std::process::Output, AppE
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|error| AppError::Io(format!("{program} 실행 실패: {}", sanitize(&error.to_string()))))
+        .map_err(|error| {
+            AppError::Io(format!(
+                "{program} 실행 실패: {}",
+                sanitize(&error.to_string())
+            ))
+        })
 }
 
 fn parse_sentinel(stdout: &str) -> Option<Value> {
@@ -586,7 +591,8 @@ fn read_manager_state(app: &AppHandle) -> ManagerStateFile {
 
 fn write_manager_state(app: &AppHandle, state: &ManagerStateFile) -> Result<(), AppError> {
     let path = manager_state_path(app)?;
-    let text = serde_json::to_string_pretty(state).map_err(|error| AppError::Io(error.to_string()))?;
+    let text =
+        serde_json::to_string_pretty(state).map_err(|error| AppError::Io(error.to_string()))?;
     std::fs::write(path, text)?;
     Ok(())
 }
@@ -614,7 +620,8 @@ async fn fetch_latest_laya() -> Result<String, AppError> {
         .json::<Value>()
         .await
         .map_err(|error| AppError::Network(sanitize(&error.to_string())))?;
-    parse_pypi_latest(&body).ok_or_else(|| AppError::Network("PyPI 메타데이터가 올바르지 않습니다".into()))
+    parse_pypi_latest(&body)
+        .ok_or_else(|| AppError::Network("PyPI 메타데이터가 올바르지 않습니다".into()))
 }
 
 /// 캐시(TTL 24h) 또는 강제 새로고침으로 최신 stable 버전을 확인한다.
@@ -625,7 +632,9 @@ pub async fn check_latest_version(app: AppHandle, force: bool) -> LayaVersionChe
         .map(|value| value.as_secs() as i64)
         .unwrap_or(0);
     let cached_at = state.version_cache.get("laya").copied();
-    let fresh = cached_at.map(|at| now - at < VERSION_TTL_SECS).unwrap_or(false);
+    let fresh = cached_at
+        .map(|at| now - at < VERSION_TTL_SECS)
+        .unwrap_or(false);
     if !force && fresh {
         if let Some(latest) = state.latest_version.clone() {
             return LayaVersionCheck {
@@ -684,9 +693,14 @@ fn envs_root(app: &AppHandle) -> Result<PathBuf, AppError> {
     let root = match env_dir {
         Some(dir) if is_envs_dir(&dir) => dir.parent().map(Path::to_path_buf),
         Some(dir) => {
-            let parent_is_envs = dir.parent().map(|parent| is_envs_dir(parent)).unwrap_or(false);
+            let parent_is_envs = dir
+                .parent()
+                .map(|parent| is_envs_dir(parent))
+                .unwrap_or(false);
             if parent_is_envs {
-                dir.parent().and_then(|parent| parent.parent()).map(Path::to_path_buf)
+                dir.parent()
+                    .and_then(|parent| parent.parent())
+                    .map(Path::to_path_buf)
             } else {
                 dir.parent().map(Path::to_path_buf)
             }
@@ -722,7 +736,8 @@ fn read_env_state(env_dir: &Path) -> Option<EnvStateFile> {
 
 fn write_env_state(env_dir: &Path, state: &EnvStateFile) -> Result<(), AppError> {
     std::fs::create_dir_all(env_dir)?;
-    let text = serde_json::to_string_pretty(state).map_err(|error| AppError::Io(error.to_string()))?;
+    let text =
+        serde_json::to_string_pretty(state).map_err(|error| AppError::Io(error.to_string()))?;
     std::fs::write(env_dir.join(ENV_STATE_FILE), text)?;
     Ok(())
 }
@@ -747,8 +762,16 @@ pub fn list_envs(app: &AppHandle) -> Vec<LayaEnvEntry> {
             entries.push(LayaEnvEntry {
                 path: dir.to_string_lossy().to_string(),
                 version: state.version,
-                kind: if state.kind.is_empty() { "gpu".into() } else { state.kind },
-                state: if state.state.is_empty() { "incomplete".into() } else { state.state },
+                kind: if state.kind.is_empty() {
+                    "gpu".into()
+                } else {
+                    state.kind
+                },
+                state: if state.state.is_empty() {
+                    "incomplete".into()
+                } else {
+                    state.state
+                },
                 created_at: state.created_at,
                 metrics: state.metrics,
                 active: manager
@@ -860,10 +883,7 @@ pub fn diagnose(executable: &Path) -> Result<LayaEnvironmentStatus, AppError> {
             executable.to_string_lossy()
         )));
     }
-    let output = run_hidden(
-        &executable.to_string_lossy(),
-        &["-c", DIAGNOSTIC_SCRIPT],
-    )?;
+    let output = run_hidden(&executable.to_string_lossy(), &["-c", DIAGNOSTIC_SCRIPT])?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let Some(value) = parse_sentinel(&stdout) else {
         let stderr = sanitize(&String::from_utf8_lossy(&output.stderr));
@@ -896,10 +916,8 @@ pub async fn laya_env_status(app: AppHandle) -> Result<LayaEnvironmentStatus, Ap
     let manager = read_manager_state(&app);
     let version = check_latest_version(app.clone(), false).await;
     status.latest_laya_version = version.latest.clone();
-    let (update_available, version_error) = version_check(
-        status.laya_version.as_deref(),
-        version.latest.as_deref(),
-    );
+    let (update_available, version_error) =
+        version_check(status.laya_version.as_deref(), version.latest.as_deref());
     status.update_available = update_available;
     status.version_check_error = version.error.clone().or(version_error);
     status.environment_kind = manager
@@ -948,7 +966,10 @@ pub async fn laya_env_status(app: AppHandle) -> Result<LayaEnvironmentStatus, Ap
 }
 
 #[tauri::command]
-pub async fn laya_env_check_updates(app: AppHandle, force: bool) -> Result<LayaVersionCheck, AppError> {
+pub async fn laya_env_check_updates(
+    app: AppHandle,
+    force: bool,
+) -> Result<LayaVersionCheck, AppError> {
     let mut check = check_latest_version(app.clone(), force).await;
     let config = active_service_config(&app)?;
     let installed = diagnose(&PathBuf::from(&config.executable))
@@ -967,7 +988,8 @@ fn http_get_json(host: &str, port: u16, path: &str, timeout_ms: u64) -> Option<V
     use std::io::{Read, Write};
     let address = format!("{host}:{port}");
     let socket = address.parse().ok()?;
-    let mut stream = std::net::TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)).ok()?;
+    let mut stream =
+        std::net::TcpStream::connect_timeout(&socket, Duration::from_millis(timeout_ms)).ok()?;
     let _ = stream.set_read_timeout(Some(Duration::from_millis(timeout_ms)));
     let request = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).ok()?;
@@ -1096,11 +1118,23 @@ fn run_plan(
             let probe = probe_candidate_server(app, step, env_vars);
             match probe {
                 Ok(value) => {
-                    emit_progress(app, &format!("{index}"), &step.label, "done", Some(sanitize(&value.to_string())));
+                    emit_progress(
+                        app,
+                        &format!("{index}"),
+                        &step.label,
+                        "done",
+                        Some(sanitize(&value.to_string())),
+                    );
                     outputs.push(value);
                 }
                 Err(error) => {
-                    emit_progress(app, &format!("{index}"), &step.label, "failed", Some(sanitize(&error.to_string())));
+                    emit_progress(
+                        app,
+                        &format!("{index}"),
+                        &step.label,
+                        "failed",
+                        Some(sanitize(&error.to_string())),
+                    );
                     return Err(error);
                 }
             }
@@ -1115,15 +1149,35 @@ fn run_plan(
             Ok(output) => output,
             Err(error) => {
                 let message = sanitize(&error.to_string());
-                emit_progress(app, &format!("{index}"), &step.label, "failed", Some(message.clone()));
+                emit_progress(
+                    app,
+                    &format!("{index}"),
+                    &step.label,
+                    "failed",
+                    Some(message.clone()),
+                );
                 return Err(AppError::Io(format!("{}: {message}", step.label)));
             }
         };
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         if !output.status.success() {
-            let tail = sanitize(stderr.lines().rev().take(6).collect::<Vec<_>>().join(" ").as_str());
-            emit_progress(app, &format!("{index}"), &step.label, "failed", Some(tail.clone()));
+            let tail = sanitize(
+                stderr
+                    .lines()
+                    .rev()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .as_str(),
+            );
+            emit_progress(
+                app,
+                &format!("{index}"),
+                &step.label,
+                "failed",
+                Some(tail.clone()),
+            );
             return Err(AppError::Io(format!("{} 실패: {tail}", step.label)));
         }
         let value = parse_sentinel(&stdout).unwrap_or(Value::Null);
@@ -1157,9 +1211,12 @@ fn probe_candidate_server(
     }
     command.env("LAYA_PORT", port.to_string());
     command.env("LAYA_DEVICE", "cuda");
-    let mut child = command
-        .spawn()
-        .map_err(|error| AppError::Io(format!("후보 서버 실행 실패: {}", sanitize(&error.to_string()))))?;
+    let mut child = command.spawn().map_err(|error| {
+        AppError::Io(format!(
+            "후보 서버 실행 실패: {}",
+            sanitize(&error.to_string())
+        ))
+    })?;
     let deadline = Instant::now() + Duration::from_secs(180);
     let mut health = Value::Null;
     while Instant::now() < deadline {
@@ -1177,7 +1234,9 @@ fn probe_candidate_server(
     }
     if health.is_null() {
         let _ = child.kill();
-        return Err(AppError::Io("후보 서버가 제한 시간 안에 준비되지 않았습니다".into()));
+        return Err(AppError::Io(
+            "후보 서버가 제한 시간 안에 준비되지 않았습니다".into(),
+        ));
     }
     // health 확인 후, 서버를 살려 둔 채 추론을 검증한다(첫 추론은 커널 컴파일로 느릴 수 있음).
     let mut inference_ok = false;
@@ -1200,8 +1259,11 @@ fn probe_candidate_server(
 fn http_post_systemone(port: u16, api_key: Option<&str>) -> bool {
     use std::io::{Read, Write};
     let address = format!("127.0.0.1:{port}");
-    let Ok(socket) = address.parse() else { return false };
-    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&socket, Duration::from_millis(800)) else {
+    let Ok(socket) = address.parse() else {
+        return false;
+    };
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&socket, Duration::from_millis(800))
+    else {
         return false;
     };
     let body = serde_json::json!({
@@ -1242,10 +1304,15 @@ fn cuda_env_vars(version: &str) -> Vec<(String, String)> {
 // ---------------------------------------------------------------- 후보 생성 커맨드
 
 #[tauri::command]
-pub async fn laya_env_create_gpu(app: AppHandle, target_version: Option<String>) -> Result<(), AppError> {
+pub async fn laya_env_create_gpu(
+    app: AppHandle,
+    target_version: Option<String>,
+) -> Result<(), AppError> {
     let state = app.state::<LayaEnvState>();
     if state.running.swap(true, Ordering::SeqCst) {
-        return Err(AppError::InvalidRequest("이미 환경 작업이 진행 중입니다".into()));
+        return Err(AppError::InvalidRequest(
+            "이미 환경 작업이 진행 중입니다".into(),
+        ));
     }
     state.cancel.store(false, Ordering::SeqCst);
     let handle = app.clone();
@@ -1282,9 +1349,9 @@ fn create_gpu_candidate(app: &AppHandle, target_version: Option<String>) -> Resu
         Some(version) if !version.trim().is_empty() => version,
         _ => {
             let check = tauri::async_runtime::block_on(check_latest_version(app.clone(), true));
-            check
-                .latest
-                .ok_or_else(|| AppError::Network(check.error.unwrap_or_else(|| "최신 버전 확인 실패".into())))?
+            check.latest.ok_or_else(|| {
+                AppError::Network(check.error.unwrap_or_else(|| "최신 버전 확인 실패".into()))
+            })?
         }
     };
     let env_dir = envs.join(format!("laya-{version}-gpu"));
@@ -1303,29 +1370,53 @@ fn create_gpu_candidate(app: &AppHandle, target_version: Option<String>) -> Resu
     let wrapper = wrapper_path(app)?;
     let mut last_error: Option<AppError> = None;
     for index in TORCH_CUDA_INDEXES {
-        emit_progress(app, "plan", &format!("Trying PyTorch {}", index.0), "running", None);
+        emit_progress(
+            app,
+            "plan",
+            &format!("Trying PyTorch {}", index.0),
+            "running",
+            None,
+        );
         let plan = build_create_plan(&base, &env_dir, &version, index, &wrapper);
         match run_plan(app, &plan, &cuda_env_vars(&version)) {
             Ok(outputs) => {
                 let diag = outputs.get(5).cloned().unwrap_or(Value::Null);
                 let smoke = outputs.get(6).cloned().unwrap_or(Value::Null);
                 let server = outputs.get(7).cloned().unwrap_or(Value::Null);
-                let fast = smoke.get("fastPath").and_then(Value::as_bool).unwrap_or(false);
+                let fast = smoke
+                    .get("fastPath")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let devices = smoke.get("devices").cloned().unwrap_or(Value::Null);
-                let tilelang = diag.get("tilelangInstalled").and_then(Value::as_bool).unwrap_or(false);
+                let tilelang = diag
+                    .get("tilelangInstalled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 write_env_state(
                     &env_dir,
                     &EnvStateFile {
                         state: "ready".into(),
                         version: Some(version.clone()),
                         kind: "gpu".into(),
-                        created_at: read_env_state(&env_dir).and_then(|state| state.created_at).or_else(|| Some(now_iso())),
+                        created_at: read_env_state(&env_dir)
+                            .and_then(|state| state.created_at)
+                            .or_else(|| Some(now_iso())),
                         updated_at: Some(now_iso()),
-                        torch_cuda_version: diag.get("torchCudaVersion").and_then(Value::as_str).map(str::to_string),
-                        gpu_name: diag.get("gpuName").and_then(Value::as_str).map(str::to_string),
+                        torch_cuda_version: diag
+                            .get("torchCudaVersion")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        gpu_name: diag
+                            .get("gpuName")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                         tilelang: Some(tilelang),
                         fast_path: Some(fast),
-                        backend: Some(if fast { "tilelang".into() } else { "torch".into() }),
+                        backend: Some(if fast {
+                            "tilelang".into()
+                        } else {
+                            "torch".into()
+                        }),
                         metrics: Some(serde_json::json!({
                             "smoke": smoke,
                             "server": server,
@@ -1338,7 +1429,13 @@ fn create_gpu_candidate(app: &AppHandle, target_version: Option<String>) -> Resu
                 return Ok(());
             }
             Err(error) => {
-                emit_progress(app, "plan", &format!("PyTorch {} 실패", index.0), "failed", Some(sanitize(&error.to_string())));
+                emit_progress(
+                    app,
+                    "plan",
+                    &format!("PyTorch {} 실패", index.0),
+                    "failed",
+                    Some(sanitize(&error.to_string())),
+                );
                 last_error = Some(error);
             }
         }
@@ -1373,7 +1470,14 @@ pub fn laya_env_list(app: AppHandle) -> Vec<LayaEnvEntry> {
 
 // ---------------------------------------------------------------- 활성화 / 롤백
 
-fn save_laya_config(app: &AppHandle, executable: &str, args: Vec<String>, env_dir: &str, version: Option<&str>, kind: &str) -> Result<(), AppError> {
+fn save_laya_config(
+    app: &AppHandle,
+    executable: &str,
+    args: Vec<String>,
+    env_dir: &str,
+    version: Option<&str>,
+    kind: &str,
+) -> Result<(), AppError> {
     let mut config = active_service_config(app)?;
     config.executable = executable.to_string();
     config.args = args;
@@ -1389,7 +1493,9 @@ fn save_laya_config(app: &AppHandle, executable: &str, args: Vec<String>, env_di
 pub async fn laya_env_activate(app: AppHandle, env_path: String) -> Result<String, AppError> {
     let env_dir = PathBuf::from(&env_path);
     if !env_python(&env_dir).exists() {
-        return Err(AppError::InvalidRequest("후보 환경의 Python을 찾을 수 없습니다".into()));
+        return Err(AppError::InvalidRequest(
+            "후보 환경의 Python을 찾을 수 없습니다".into(),
+        ));
     }
     let env_state = read_env_state(&env_dir).unwrap_or_default();
     if env_state.state != "ready" {
@@ -1434,10 +1540,18 @@ pub async fn laya_env_activate(app: AppHandle, env_path: String) -> Result<Strin
     }
 
     // 4) 자동 롤백
-    emit_progress(&app, "activate", "Activation failed — rolling back", "failed", None);
+    emit_progress(
+        &app,
+        "activate",
+        "Activation failed — rolling back",
+        "failed",
+        None,
+    );
     let rollback_result = rollback_to(&app, &previous_snapshot);
     match rollback_result {
-        Ok(()) => Err(AppError::Io("업데이트 실패 — 기존 환경으로 자동 복구했습니다".into())),
+        Ok(()) => Err(AppError::Io(
+            "업데이트 실패 — 기존 환경으로 자동 복구했습니다".into(),
+        )),
         Err(error) => Err(AppError::Io(format!(
             "업데이트 실패 — 자동 복구도 실패했습니다: {}",
             sanitize(&error.to_string())
@@ -1482,7 +1596,9 @@ pub async fn laya_env_rollback(app: AppHandle) -> Result<String, AppError> {
     };
     let env_dir = PathBuf::from(&previous);
     if !env_python(&env_dir).exists() {
-        return Err(AppError::InvalidRequest("이전 환경을 찾을 수 없습니다".into()));
+        return Err(AppError::InvalidRequest(
+            "이전 환경을 찾을 수 없습니다".into(),
+        ));
     }
     let state = read_env_state(&env_dir).unwrap_or_default();
     let wrapper = wrapper_path(&app)?;
@@ -1494,7 +1610,11 @@ pub async fn laya_env_rollback(app: AppHandle) -> Result<String, AppError> {
         vec![wrapper.to_string_lossy().to_string()],
         &env_dir.to_string_lossy(),
         state.version.as_deref(),
-        if state.kind.is_empty() { "gpu" } else { &state.kind },
+        if state.kind.is_empty() {
+            "gpu"
+        } else {
+            &state.kind
+        },
     )?;
     local_services::start_service_for_activation(&app, "laya")?;
     if !wait_for_health(&app, Duration::from_secs(180)) {
@@ -1513,7 +1633,11 @@ pub async fn laya_env_rollback(app: AppHandle) -> Result<String, AppError> {
 // ---------------------------------------------------------------- 벤치마크
 
 #[tauri::command]
-pub async fn laya_env_benchmark(app: AppHandle, env_path: Option<String>, iterations: Option<u32>) -> Result<LayaBenchmark, AppError> {
+pub async fn laya_env_benchmark(
+    app: AppHandle,
+    env_path: Option<String>,
+    iterations: Option<u32>,
+) -> Result<LayaBenchmark, AppError> {
     let executable = match env_path {
         Some(path) if !path.trim().is_empty() => env_python(Path::new(&path)),
         _ => PathBuf::from(active_service_config(&app)?.executable),
@@ -1522,12 +1646,18 @@ pub async fn laya_env_benchmark(app: AppHandle, env_path: Option<String>, iterat
         return Err(AppError::Io("Python 실행 파일이 없습니다".into()));
     }
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || run_benchmark(&handle, &executable, iterations.unwrap_or(5)))
-        .await
-        .map_err(|error| AppError::Io(format!("벤치마크 실패: {error}")))?
+    tauri::async_runtime::spawn_blocking(move || {
+        run_benchmark(&handle, &executable, iterations.unwrap_or(5))
+    })
+    .await
+    .map_err(|error| AppError::Io(format!("벤치마크 실패: {error}")))?
 }
 
-fn run_benchmark(app: &AppHandle, executable: &Path, iterations: u32) -> Result<LayaBenchmark, AppError> {
+fn run_benchmark(
+    app: &AppHandle,
+    executable: &Path,
+    iterations: u32,
+) -> Result<LayaBenchmark, AppError> {
     let request = env_path_request(app);
     let _ = request;
     let mut command = crate::process::hidden_command(executable);
@@ -1538,9 +1668,12 @@ fn run_benchmark(app: &AppHandle, executable: &Path, iterations: u32) -> Result<
         .env("LAYA_FAST", "1")
         .env("LAYA_BENCH_ITERS", iterations.to_string())
         .env("LAYA_BENCH_MODELS", DEFAULT_MODELS.join(","));
-    let output = command
-        .output()
-        .map_err(|error| AppError::Io(format!("벤치마크 실행 실패: {}", sanitize(&error.to_string()))))?;
+    let output = command.output().map_err(|error| {
+        AppError::Io(format!(
+            "벤치마크 실행 실패: {}",
+            sanitize(&error.to_string())
+        ))
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let Some(value) = parse_sentinel(&stdout) else {
         let stderr = sanitize(&String::from_utf8_lossy(&output.stderr));
@@ -1553,13 +1686,24 @@ fn run_benchmark(app: &AppHandle, executable: &Path, iterations: u32) -> Result<
     let diag = diagnose(executable).ok();
     Ok(LayaBenchmark {
         python_path: executable.to_string_lossy().to_string(),
-        device: value.get("device").and_then(Value::as_str).map(str::to_string),
-        backend: value
-            .get("fastPath")
-            .and_then(Value::as_bool)
-            .map(|fast| if fast { "tilelang".to_string() } else { "torch".to_string() }),
-        laya_version: value.get("layaVersion").and_then(Value::as_str).map(str::to_string),
-        torch_version: diag.as_ref().and_then(|status| status.torch_version.clone()),
+        device: value
+            .get("device")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        backend: value.get("fastPath").and_then(Value::as_bool).map(|fast| {
+            if fast {
+                "tilelang".to_string()
+            } else {
+                "torch".to_string()
+            }
+        }),
+        laya_version: value
+            .get("layaVersion")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        torch_version: diag
+            .as_ref()
+            .and_then(|status| status.torch_version.clone()),
         cold_load_ms: value.get("coldLoadMs").and_then(Value::as_u64),
         warm_p50_ms: value.get("warmP50Ms").and_then(Value::as_f64),
         batch_p50_ms: value.get("batchP50Ms").and_then(Value::as_f64),
@@ -1567,7 +1711,12 @@ fn run_benchmark(app: &AppHandle, executable: &Path, iterations: u32) -> Result<
         loaded_models: value
             .get("loaded")
             .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_string)).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default(),
         vram_used_bytes: value.get("vramAllocatedBytes").and_then(Value::as_u64),
         error: None,
@@ -1582,10 +1731,22 @@ mod tests {
 
     #[test]
     fn compares_versions_semantically() {
-        assert_eq!(compare_versions("0.3.18", "0.3.21"), std::cmp::Ordering::Less);
-        assert_eq!(compare_versions("0.3.21", "0.3.21"), std::cmp::Ordering::Equal);
-        assert_eq!(compare_versions("0.4.0", "0.3.21"), std::cmp::Ordering::Greater);
-        assert_eq!(compare_versions("1.0", "0.9.9"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_versions("0.3.18", "0.3.21"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_versions("0.3.21", "0.3.21"),
+            std::cmp::Ordering::Equal
+        );
+        assert_eq!(
+            compare_versions("0.4.0", "0.3.21"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("1.0", "0.9.9"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
@@ -1663,7 +1824,11 @@ mod tests {
         let (status, _) = parse_diagnostic(&value);
         assert!(status.cuda_available);
         assert!(!status.fast_path_supported, "타일랭 없으면 fast 미지원");
-        assert_eq!(status.effective_device.as_deref(), Some("cuda"), "CUDA stock은 유지");
+        assert_eq!(
+            status.effective_device.as_deref(),
+            Some("cuda"),
+            "CUDA stock은 유지"
+        );
         assert!(status.problems.iter().any(|item| item.contains("TileLang")));
     }
 
@@ -1694,10 +1859,18 @@ mod tests {
         );
         assert_eq!(plan.len(), 8);
         assert_eq!(plan[0].program, r"C:\Python313\python.exe");
-        assert_eq!(plan[0].args, vec!["-m", "venv", r"C:\Laya\envs\laya-0.3.21-gpu"]);
+        assert_eq!(
+            plan[0].args,
+            vec!["-m", "venv", r"C:\Laya\envs\laya-0.3.21-gpu"]
+        );
         assert!(plan[2].args.contains(&"torch".to_string()));
-        assert!(plan[2].args.contains(&"https://download.pytorch.org/whl/cu130".to_string()));
-        assert!(plan[4].args.iter().any(|arg| arg == "laya[serve,fast]==0.3.21"));
+        assert!(plan[2]
+            .args
+            .contains(&"https://download.pytorch.org/whl/cu130".to_string()));
+        assert!(plan[4]
+            .args
+            .iter()
+            .any(|arg| arg == "laya[serve,fast]==0.3.21"));
         for step in &plan {
             assert!(!step.program.to_lowercase().contains("cmd"), "셸 미사용");
         }

@@ -92,7 +92,9 @@ pub fn ensure_secret_not_in_url(url: &str, secret: &str) -> Result<(), AppError>
 fn status_message(status: u16, status_text: &str) -> String {
     match status {
         401 | 403 => "프로바이더가 이 API 키를 거부했습니다".into(),
-        404 => "테스트 엔드포인트를 찾을 수 없습니다. 프로바이더 설정의 Base URL을 확인하세요.".into(),
+        404 => {
+            "테스트 엔드포인트를 찾을 수 없습니다. 프로바이더 설정의 Base URL을 확인하세요.".into()
+        }
         429 => "프로바이더가 호출을 제한했습니다. 키는 유효하지만 현재 제한된 상태입니다.".into(),
         500..=599 => "프로바이더가 서버 오류를 반환했습니다. 키는 아직 유효할 수 있습니다.".into(),
         _ => format!("HTTP {status} {status_text}"),
@@ -106,7 +108,9 @@ pub async fn test_http(
 ) -> Result<TestOutcome, AppError> {
     let url = request.url.trim().to_string();
     if url.is_empty() {
-        return Err(AppError::InvalidRequest("테스트 URL이 비어 있습니다".into()));
+        return Err(AppError::InvalidRequest(
+            "테스트 URL이 비어 있습니다".into(),
+        ));
     }
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(AppError::InvalidRequest(
@@ -138,7 +142,9 @@ pub async fn test_http(
             .map_err(|e| AppError::Network(e.to_string()))?;
 
         let method = reqwest::Method::from_bytes(request.method.to_uppercase().as_bytes())
-            .map_err(|_| AppError::InvalidRequest(format!("지원되지 않는 메서드: {}", request.method)))?;
+            .map_err(|_| {
+                AppError::InvalidRequest(format!("지원되지 않는 메서드: {}", request.method))
+            })?;
         let mut builder = client.request(method, &url);
         for header in &request.headers {
             builder = builder.header(header.name.as_str(), header.value.as_str());
@@ -156,7 +162,11 @@ pub async fn test_http(
             Ok(response) => response,
             Err(error) => {
                 let latency_ms = started.elapsed().as_millis() as u64;
-                let status = if error.is_timeout() { "timeout" } else { "network_error" };
+                let status = if error.is_timeout() {
+                    "timeout"
+                } else {
+                    "network_error"
+                };
                 let message = if error.is_timeout() {
                     format!("{}ms 후 요청 시간이 초과되었습니다", timeout.as_millis())
                 } else if error.is_connect() {
@@ -245,7 +255,9 @@ mod tests {
 
     #[test]
     fn rejects_secret_in_url() {
-        assert!(ensure_secret_not_in_url("https://example.com/v1/models?key=abc123", "abc123").is_err());
+        assert!(
+            ensure_secret_not_in_url("https://example.com/v1/models?key=abc123", "abc123").is_err()
+        );
         assert!(ensure_secret_not_in_url("https://example.com/v1/models", "abc123").is_ok());
     }
 }

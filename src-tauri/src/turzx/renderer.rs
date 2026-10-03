@@ -129,9 +129,12 @@ pub fn vram_gauge_color(percent: Option<f64>) -> (u8, u8, u8) {
 
 /// VRAM 사용률 색상: >90% 위험, >75% 경고.
 
-
 /// 금액 문자열("$6.2 / $10")을 만든다. 통화/숫자가 없으면 None.
-pub fn amount_text(used: Option<f64>, limit: Option<f64>, currency: Option<&str>) -> Option<String> {
+pub fn amount_text(
+    used: Option<f64>,
+    limit: Option<f64>,
+    currency: Option<&str>,
+) -> Option<String> {
     let symbol = match currency.unwrap_or("").to_uppercase().as_str() {
         "USD" => "$",
         "KRW" => "₩",
@@ -273,8 +276,11 @@ pub fn normalize_monitor_row(monitor: &str, details_json: Option<&str>) -> Optio
                 row.primary_label = label;
                 row.primary_remaining_percent = Some(remaining);
                 row.primary_reset_in_secs = reset;
-                if let Some((label, remaining, reset)) =
-                    weekly.iter().enumerate().find(|(index, _)| *index != primary_index).map(|(_, entry)| entry)
+                if let Some((label, remaining, reset)) = weekly
+                    .iter()
+                    .enumerate()
+                    .find(|(index, _)| *index != primary_index)
+                    .map(|(_, entry)| entry)
                 {
                     row.secondary_label = label.clone();
                     row.secondary_remaining_percent = Some(*remaining);
@@ -290,8 +296,10 @@ pub fn normalize_monitor_row(monitor: &str, details_json: Option<&str>) -> Optio
             let now = now_secs();
             let window_entry = |key: &str| -> Option<(Option<f64>, Option<i64>)> {
                 let entry = details.get(key).filter(|v| !v.is_null())?;
-                let used = number(entry.get("usedPercent")).or_else(|| number(entry.get("percent")));
-                let remaining = number(entry.get("remainingPercent")).or_else(|| remaining_from_used(used));
+                let used =
+                    number(entry.get("usedPercent")).or_else(|| number(entry.get("percent")));
+                let remaining =
+                    number(entry.get("remainingPercent")).or_else(|| remaining_from_used(used));
                 let reset = value_secs(Some(entry), &["resetAt", "resetsAt", "resetInSec"], now);
                 Some((remaining, reset))
             };
@@ -599,7 +607,9 @@ pub fn build_api_gauges(rows: &[DisplayApiRow], limit: usize) -> (Vec<ApiGaugeRo
     {
         let mut candidates: Vec<&DisplayApiRow> = rows
             .iter()
-            .filter(|row| (row.id == "grok" || row.id == "grok-build") && !used.contains(row.id.as_str()))
+            .filter(|row| {
+                (row.id == "grok" || row.id == "grok-build") && !used.contains(row.id.as_str())
+            })
             .collect();
         candidates.sort_by(|a, b| {
             let a_valid = a.primary_remaining_percent.is_some();
@@ -661,7 +671,8 @@ pub fn prioritize_workloads(mut rows: Vec<DisplayWorkload>) -> (Vec<DisplayWorkl
             match row.classification.as_str() {
                 "ai" => 0,
                 _ => match row.kind.as_str() {
-                    "managed_service" | "ollama" | "llama_cpp" | "vllm" | "comfyui" | "laya_app" => 0,
+                    "managed_service" | "ollama" | "llama_cpp" | "vllm" | "comfyui"
+                    | "laya_app" => 0,
                     "unknown_ai" => 2,
                     _ => 1,
                 },
@@ -725,9 +736,27 @@ pub fn render_boot(width: u16, height: u16) -> Vec<u8> {
     let mut canvas = Canvas::new(width, height);
     canvas.rect(0, 0, width as i32, height as i32, COLOR_BG);
     let center_x = width as i32 / 2;
-    canvas.text("API DESK", center_x - 78, (height as i32 / 2) - 60, 30, COLOR_ACCENT, true);
-    canvas.text("Starting...", center_x - 42, (height as i32 / 2) - 16, 18, COLOR_TEXT, false);
-    let rows = [("GPU", "loading"), ("VRAM", "loading"), ("API", "cached / loading")];
+    canvas.text(
+        "API DESK",
+        center_x - 78,
+        (height as i32 / 2) - 60,
+        30,
+        COLOR_ACCENT,
+        true,
+    );
+    canvas.text(
+        "Starting...",
+        center_x - 42,
+        (height as i32 / 2) - 16,
+        18,
+        COLOR_TEXT,
+        false,
+    );
+    let rows = [
+        ("GPU", "loading"),
+        ("VRAM", "loading"),
+        ("API", "cached / loading"),
+    ];
     let mut y = (height as i32 / 2) + 34;
     for (label, value) in rows {
         canvas.text(label, 20, y, 14, COLOR_MUTED, true);
@@ -753,19 +782,39 @@ pub fn render(snapshot: &TurzxDisplaySnapshot, page: &str, orientation: Orientat
     if show_api {
         // 단일 대시보드는 사용자가 정한 4개 주간 항목만, API 전용 페이지는 최대 6행.
         let limit = if page == "api" { API_GAUGE_LIMIT } else { 4 };
-        render_api_card(&mut canvas, snapshot, y_pos, width as i32, height as i32, limit);
+        render_api_card(
+            &mut canvas,
+            snapshot,
+            y_pos,
+            width as i32,
+            height as i32,
+            limit,
+        );
     }
 
     // footer
     let footer_y = height as i32 - 22;
-    canvas.line(10, footer_y - 4, width as i32 - 10, footer_y - 4, COLOR_SEPARATOR);
+    canvas.line(
+        10,
+        footer_y - 4,
+        width as i32 - 10,
+        footer_y - 4,
+        COLOR_SEPARATOR,
+    );
     canvas.text(&local_hhmm(), 12, footer_y, 14, COLOR_MUTED, false);
     let (status_text, status_color) = if snapshot.gpu.name.is_empty() {
         ("N/A", COLOR_FAINT)
     } else {
         ("CONNECTED", COLOR_OK)
     };
-    canvas.text_right(status_text, width as i32 - 12, footer_y, 13, status_color, false);
+    canvas.text_right(
+        status_text,
+        width as i32 - 12,
+        footer_y,
+        13,
+        status_color,
+        false,
+    );
     canvas.circle(width as i32 - 96, footer_y + 8, 4, status_color);
 
     canvas.finish().to_vec()
@@ -778,7 +827,12 @@ fn draw_card(canvas: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
 }
 
 /// 상단 카드: GPU/VRAM/RAM 게이지(값은 accent/임계 색, 굵게).
-fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_pos: i32, width: i32) -> i32 {
+fn render_metrics_card(
+    canvas: &mut Canvas,
+    snapshot: &TurzxDisplaySnapshot,
+    y_pos: i32,
+    width: i32,
+) -> i32 {
     let gpu = &snapshot.gpu;
     let x = 8;
     let w = width - 16;
@@ -792,7 +846,14 @@ fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
     } else {
         gpu.name.replace("NVIDIA GeForce ", "")
     };
-    canvas.text(&truncate(&name, 20), inner_x, y_pos + 10, 19, COLOR_TEXT, true);
+    canvas.text(
+        &truncate(&name, 20),
+        inner_x,
+        y_pos + 10,
+        19,
+        COLOR_TEXT,
+        true,
+    );
     let mut info = String::new();
     if let Some(temp) = gpu.temperature_c {
         info.push_str(&format!("{temp}°C"));
@@ -812,7 +873,16 @@ fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
     let util_text = utilization
         .map(|value| format!("{}%", value.round() as i64))
         .unwrap_or_else(|| "...".into());
-    draw_value_gauge(canvas, inner_x, inner_w, "GPU", utilization, COLOR_ACCENT, &util_text, row_y);
+    draw_value_gauge(
+        canvas,
+        inner_x,
+        inner_w,
+        "GPU",
+        utilization,
+        COLOR_ACCENT,
+        &util_text,
+        row_y,
+    );
     row_y += API_GAUGE_ROW_HEIGHT;
 
     let percent = vram_percent(gpu);
@@ -825,7 +895,16 @@ fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
             format_gib(gpu.vram_total_bytes)
         )
     };
-    draw_value_gauge(canvas, inner_x, inner_w, "VRAM", percent, vram_gauge_color(percent), &vram_text, row_y);
+    draw_value_gauge(
+        canvas,
+        inner_x,
+        inner_w,
+        "VRAM",
+        percent,
+        vram_gauge_color(percent),
+        &vram_text,
+        row_y,
+    );
     row_y += API_GAUGE_ROW_HEIGHT;
 
     let ram_percent = match (gpu.ram_used_bytes, gpu.ram_total_bytes) {
@@ -837,13 +916,27 @@ fn render_metrics_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
         format_gib(gpu.ram_used_bytes),
         format_gib(gpu.ram_total_bytes)
     );
-    draw_value_gauge(canvas, inner_x, inner_w, "RAM", ram_percent, vram_gauge_color(ram_percent), &ram_text, row_y);
+    draw_value_gauge(
+        canvas,
+        inner_x,
+        inner_w,
+        "RAM",
+        ram_percent,
+        vram_gauge_color(ram_percent),
+        &ram_text,
+        row_y,
+    );
 
     y_pos + card_h + 6
 }
 
 /// GPU PROCESSES 카드.
-fn render_process_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_pos: i32, width: i32) -> i32 {
+fn render_process_card(
+    canvas: &mut Canvas,
+    snapshot: &TurzxDisplaySnapshot,
+    y_pos: i32,
+    width: i32,
+) -> i32 {
     let x = 8;
     let w = width - 16;
     let inner_x = x + 12;
@@ -853,7 +946,12 @@ fn render_process_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
         .iter()
         .map(|row| if row.model.is_some() { 34 } else { 19 })
         .sum();
-    let card_h = 12 + 18 + row_lines + if overflow > 0 { 15 } else { 0 } + if rows.is_empty() { 18 } else { 0 } + 8;
+    let card_h = 12
+        + 18
+        + row_lines
+        + if overflow > 0 { 15 } else { 0 }
+        + if rows.is_empty() { 18 } else { 0 }
+        + 8;
     draw_card(canvas, x, y_pos, w, card_h);
 
     let mut row_y = y_pos + 10;
@@ -861,7 +959,14 @@ fn render_process_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
     row_y += 18;
 
     if rows.is_empty() {
-        canvas.text("(GPU 사용 중인 워크로드 없음)", inner_x, row_y, 12, COLOR_FAINT, false);
+        canvas.text(
+            "(GPU 사용 중인 워크로드 없음)",
+            inner_x,
+            row_y,
+            12,
+            COLOR_FAINT,
+            false,
+        );
         row_y += 18;
     }
     for workload in rows {
@@ -884,13 +989,27 @@ fn render_process_card(canvas: &mut Canvas, snapshot: &TurzxDisplaySnapshot, y_p
         row_y += 19;
         if let Some(model) = workload.model.as_deref() {
             if !model.eq_ignore_ascii_case(&workload.service) {
-                canvas.text(&truncate(model, 24), inner_x + 10, row_y, 11, COLOR_MUTED, false);
+                canvas.text(
+                    &truncate(model, 24),
+                    inner_x + 10,
+                    row_y,
+                    11,
+                    COLOR_MUTED,
+                    false,
+                );
                 row_y += 15;
             }
         }
     }
     if overflow > 0 {
-        canvas.text(&format!("+{overflow} more"), inner_x + 10, row_y, 11, COLOR_FAINT, false);
+        canvas.text(
+            &format!("+{overflow} more"),
+            inner_x + 10,
+            row_y,
+            11,
+            COLOR_FAINT,
+            false,
+        );
     }
     y_pos + card_h + 6
 }
@@ -919,7 +1038,14 @@ fn render_api_card(
     if snapshot.api_usage.is_empty() {
         draw_card(canvas, x, y_pos, w, 46);
         canvas.text("API USAGE", inner_x, y_pos + 10, 12, COLOR_MUTED, true);
-        canvas.text("(사용량 스냅샷 없음)", inner_x, y_pos + 26, 12, COLOR_FAINT, false);
+        canvas.text(
+            "(사용량 스냅샷 없음)",
+            inner_x,
+            y_pos + 26,
+            12,
+            COLOR_FAINT,
+            false,
+        );
         return y_pos + 52;
     }
     let (mut rows, mut overflow) = build_api_gauges(&snapshot.api_usage, limit.max(1));
@@ -946,7 +1072,14 @@ fn render_api_card(
         row_y += API_GAUGE_ROW_HEIGHT + API_GAUGE_ROW_GAP;
     }
     if overflow > 0 {
-        canvas.text(&format!("+{overflow} more"), inner_x, row_y, 11, COLOR_FAINT, false);
+        canvas.text(
+            &format!("+{overflow} more"),
+            inner_x,
+            row_y,
+            11,
+            COLOR_FAINT,
+            false,
+        );
     }
     y_pos + card_h + 6
 }
@@ -975,8 +1108,22 @@ fn draw_value_gauge(
     canvas.text(label, x + 9, y + 4, 14, COLOR_TEXT, true);
     let value_w = canvas.text_width(value, 14, true);
     let chip_w = value_w + 14;
-    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 6, COLOR_CHIP_BORDER);
-    canvas.round_rect(x + w - chip_w - 1, y + 3, chip_w - 2, h - 6, 5, COLOR_GAUGE_CHIP);
+    canvas.round_rect(
+        x + w - chip_w - 2,
+        y + 2,
+        chip_w,
+        h - 4,
+        6,
+        COLOR_CHIP_BORDER,
+    );
+    canvas.round_rect(
+        x + w - chip_w - 1,
+        y + 3,
+        chip_w - 2,
+        h - 6,
+        5,
+        COLOR_GAUGE_CHIP,
+    );
     canvas.text_right(value, x + w - 9, y + 4, 14, COLOR_TEXT, true);
 }
 
@@ -1016,8 +1163,22 @@ fn draw_api_gauge(canvas: &mut Canvas, row: &ApiGaugeRow, y: i32, width: i32, x:
     let value = gauge_value_text(row);
     let value_w = canvas.text_width(&value, 14, true);
     let chip_w = value_w + 14;
-    canvas.round_rect(x + w - chip_w - 2, y + 2, chip_w, h - 4, 6, COLOR_CHIP_BORDER);
-    canvas.round_rect(x + w - chip_w - 1, y + 3, chip_w - 2, h - 6, 5, COLOR_GAUGE_CHIP);
+    canvas.round_rect(
+        x + w - chip_w - 2,
+        y + 2,
+        chip_w,
+        h - 4,
+        6,
+        COLOR_CHIP_BORDER,
+    );
+    canvas.round_rect(
+        x + w - chip_w - 1,
+        y + 3,
+        chip_w - 2,
+        h - 6,
+        5,
+        COLOR_GAUGE_CHIP,
+    );
     let value_color = match row.state {
         ApiGaugeState::Critical | ApiGaugeState::Limit => COLOR_DANGER,
         ApiGaugeState::Warning => COLOR_ORANGE,
@@ -1177,9 +1338,9 @@ mod tests {
         let frame = render_boot(320, 480);
         assert_eq!(frame.len(), 320 * 480 * 3);
         // 배경색만이 아니라 텍스트/값이 그려져야 한다.
-        let has_accent = frame
-            .chunks_exact(3)
-            .any(|pixel| pixel[0] == COLOR_ACCENT.0 && pixel[1] == COLOR_ACCENT.1 && pixel[2] == COLOR_ACCENT.2);
+        let has_accent = frame.chunks_exact(3).any(|pixel| {
+            pixel[0] == COLOR_ACCENT.0 && pixel[1] == COLOR_ACCENT.1 && pixel[2] == COLOR_ACCENT.2
+        });
         assert!(has_accent, "부팅 프레임에 API DESK 텍스트(accent) 필요");
     }
 
@@ -1249,10 +1410,18 @@ mod tests {
 
     #[test]
     fn normalizes_usage_amounts() {
-        let row = normalize_usage_row("openrouter", "오픈라우터", Some(3.8), Some(10.0), Some(6.2), Some("USD"));
+        let row = normalize_usage_row(
+            "openrouter",
+            "오픈라우터",
+            Some(3.8),
+            Some(10.0),
+            Some(6.2),
+            Some("USD"),
+        );
         assert_eq!(row.amount_text.as_deref(), Some("$3.8 / $10.0"));
         assert_eq!(row.primary_remaining_percent, Some(62.0));
-        let no_limit = normalize_usage_row("deepseek", "딥시크", None, None, Some(5.59), Some("USD"));
+        let no_limit =
+            normalize_usage_row("deepseek", "딥시크", None, None, Some(5.59), Some("USD"));
         assert_eq!(no_limit.primary_remaining_percent, None);
         assert_eq!(no_limit.amount_text, None);
     }
@@ -1260,10 +1429,37 @@ mod tests {
     #[test]
     fn sorts_low_remaining_first_without_dropping_codex() {
         let mut rows = vec![
-            DisplayApiRow { id: "a".into(), label: "A".into(), primary_remaining_percent: Some(80.0), age_secs: 5, ..Default::default() },
-            DisplayApiRow { id: "b".into(), label: "B".into(), primary_remaining_percent: Some(12.0), age_secs: 900, ..Default::default() },
-            DisplayApiRow { id: "codex".into(), label: "Codex".into(), primary_remaining_percent: Some(94.0), primary_label: "Wk".into(), secondary_remaining_percent: Some(72.0), secondary_label: "5h".into(), age_secs: 1, ..Default::default() },
-            DisplayApiRow { id: "d".into(), label: "D".into(), primary_remaining_percent: Some(30.0), age_secs: 60, ..Default::default() },
+            DisplayApiRow {
+                id: "a".into(),
+                label: "A".into(),
+                primary_remaining_percent: Some(80.0),
+                age_secs: 5,
+                ..Default::default()
+            },
+            DisplayApiRow {
+                id: "b".into(),
+                label: "B".into(),
+                primary_remaining_percent: Some(12.0),
+                age_secs: 900,
+                ..Default::default()
+            },
+            DisplayApiRow {
+                id: "codex".into(),
+                label: "Codex".into(),
+                primary_remaining_percent: Some(94.0),
+                primary_label: "Wk".into(),
+                secondary_remaining_percent: Some(72.0),
+                secondary_label: "5h".into(),
+                age_secs: 1,
+                ..Default::default()
+            },
+            DisplayApiRow {
+                id: "d".into(),
+                label: "D".into(),
+                primary_remaining_percent: Some(30.0),
+                age_secs: 60,
+                ..Default::default()
+            },
         ];
         let ordered = prioritize_api_rows(rows.clone());
         // 정렬만 수행하고 잘라내지 않는다(스냅샷은 전체를 유지).
@@ -1276,10 +1472,30 @@ mod tests {
     #[test]
     fn prioritizes_managed_service_and_aggregates_overflow() {
         let rows = vec![
-            DisplayWorkload { service: "Unknown".into(), kind: "unknown_ai".into(), vram_bytes: Some(9 << 30), ..Default::default() },
-            DisplayWorkload { service: "Laya".into(), kind: "managed_service".into(), vram_bytes: None, ..Default::default() },
-            DisplayWorkload { service: "Ollama".into(), kind: "ollama".into(), vram_bytes: Some(7 << 30), ..Default::default() },
-            DisplayWorkload { service: "vLLM".into(), kind: "vllm".into(), vram_bytes: Some(1 << 30), ..Default::default() },
+            DisplayWorkload {
+                service: "Unknown".into(),
+                kind: "unknown_ai".into(),
+                vram_bytes: Some(9 << 30),
+                ..Default::default()
+            },
+            DisplayWorkload {
+                service: "Laya".into(),
+                kind: "managed_service".into(),
+                vram_bytes: None,
+                ..Default::default()
+            },
+            DisplayWorkload {
+                service: "Ollama".into(),
+                kind: "ollama".into(),
+                vram_bytes: Some(7 << 30),
+                ..Default::default()
+            },
+            DisplayWorkload {
+                service: "vLLM".into(),
+                kind: "vllm".into(),
+                vram_bytes: Some(1 << 30),
+                ..Default::default()
+            },
         ];
         let (kept, overflow) = prioritize_workloads(rows);
         assert_eq!(kept.len(), WORKLOAD_LIMIT);
@@ -1347,9 +1563,10 @@ mod tests {
         assert_eq!(gauges[0].remaining, Some(93.0));
         assert_eq!(gauge_value_text(&gauges[0]), "93% · 6d");
         // 주간 전용: 5시간/월간 행은 렌더하지 않는다.
-        assert!(gauges.iter().all(|row| row.sublabel != "5h" && row.sublabel != "Mo"));
+        assert!(gauges
+            .iter()
+            .all(|row| row.sublabel != "5h" && row.sublabel != "Mo"));
     }
-
 
     #[test]
     fn formats_reset_countdown_in_days_and_hours() {
@@ -1376,7 +1593,10 @@ mod tests {
         let value = serde_json::json!({"primaryResetAt": "2026-10-04T11:49:37Z"});
         let now = 1_790_000_000; // 2026-09-27 근처
         let secs = reset_in_secs_from(&value, &["primaryResetAt"], now).unwrap();
-        assert!(secs > 900_000 && secs < 1_400_000, "약 11~16일(2026-09-21 기준): {secs}");
+        assert!(
+            secs > 900_000 && secs < 1_400_000,
+            "약 11~16일(2026-09-21 기준): {secs}"
+        );
         let epoch = serde_json::json!({"resetInSec": 1234});
         assert_eq!(reset_in_secs_from(&epoch, &["resetInSec"], now), Some(1234));
     }
@@ -1501,7 +1721,6 @@ mod tests {
         assert_eq!(overflow, 3, "9개 provider - 6행");
     }
 
-
     #[test]
     fn threshold_colors_are_drawn_in_compact_ai_section() {
         // 94 정상(accent) · 35 주의(amber) · 15 경고(orange) · 7 위험(red) 를 직접 구성한다.
@@ -1524,7 +1743,6 @@ mod tests {
         assert!(has(COLOR_DANGER), "위험(red) 필요");
     }
 
-
     #[test]
     fn gauge_rows_do_not_overlap_footer() {
         // 푸터 영역(y>=452)에 게이지 채움색이 침범하면 안 된다(마지막 행+오버플로 여유).
@@ -1534,8 +1752,14 @@ mod tests {
             for x in 0..width {
                 let offset = (y * width + x) * 3;
                 let pixel = (frame[offset], frame[offset + 1], frame[offset + 2]);
-                assert_ne!(pixel, COLOR_ORANGE, "y={y} 에서 경고색 게이지가 푸터와 겹침");
-                assert_ne!(pixel, COLOR_DANGER, "y={y} 에서 위험색 게이지가 푸터와 겹침");
+                assert_ne!(
+                    pixel, COLOR_ORANGE,
+                    "y={y} 에서 경고색 게이지가 푸터와 겹침"
+                );
+                assert_ne!(
+                    pixel, COLOR_DANGER,
+                    "y={y} 에서 위험색 게이지가 푸터와 겹침"
+                );
                 assert_ne!(pixel, COLOR_WARN, "y={y} 에서 주의색 게이지가 푸터와 겹침");
             }
         }
@@ -1698,7 +1922,10 @@ mod tests {
     #[test]
     fn dto_includes_ram_and_reset_fields() {
         let value = serde_json::to_value(sample_snapshot()).unwrap();
-        assert_eq!(value["gpu"]["ramTotalBytes"].as_u64().unwrap(), (63.9 * GIB) as u64);
+        assert_eq!(
+            value["gpu"]["ramTotalBytes"].as_u64().unwrap(),
+            (63.9 * GIB) as u64
+        );
         assert!(value["gpu"]["ramUsedBytes"].as_u64().unwrap() > 0);
         let codex = value["apiUsage"]
             .as_array()
@@ -1718,7 +1945,16 @@ mod tests {
     fn snapshot_has_no_secret_fields() {
         let value = serde_json::to_value(snapshot_full()).unwrap();
         let text = value.to_string();
-        for forbidden in ["secret", "token", "apiKey", "api_key", "password", "Bearer", "commandLine", "env"] {
+        for forbidden in [
+            "secret",
+            "token",
+            "apiKey",
+            "api_key",
+            "password",
+            "Bearer",
+            "commandLine",
+            "env",
+        ] {
             assert!(!text.contains(forbidden), "leaked field: {forbidden}");
         }
     }

@@ -18,18 +18,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::error::AppError;
 
 pub const LOG_LIMIT: usize = 400;
-pub const STALE_USAGE_MS: i64 = 5 * 60 * 1000;      // 5분
+pub const STALE_USAGE_MS: i64 = 5 * 60 * 1000; // 5분
 #[allow(dead_code)]
-pub const STALE_MONITOR_MS: i64 = 5 * 60 * 1000;    // 5분
-pub const USAGE_TICK_SECS: u64 = 60;                // 60초
+pub const STALE_MONITOR_MS: i64 = 5 * 60 * 1000; // 5분
+pub const USAGE_TICK_SECS: u64 = 60; // 60초
 
-pub const MONITOR_PROVIDERS: [&str; 5] = [
-    "codex",
-    "grok",
-    "grok-build",
-    "opencode",
-    "antigravity",
-];
+pub const MONITOR_PROVIDERS: [&str; 5] = ["codex", "grok", "grok-build", "opencode", "antigravity"];
 
 pub fn stale_threshold_ms() -> i64 {
     std::env::var("API_DESK_USAGE_STALE_MS")
@@ -197,7 +191,11 @@ pub fn log_child_process(exe_name: &str) {
 pub fn log_session_start(app: &AppHandle) {
     let pid = std::process::id();
     let build = env!("CARGO_PKG_VERSION");
-    log(app, "resident", &format!("session start pid={pid} build={build}"));
+    log(
+        app,
+        "resident",
+        &format!("session start pid={pid} build={build}"),
+    );
 }
 
 // ---------------------------------------------------------------- 사용량 스케줄러
@@ -391,12 +389,11 @@ async fn refresh_stale_usage_with_pool(
     .await
     .map_err(|error| AppError::Io(format!("사용량 조회 실패: {error}")))?;
 
-    let fields = sqlx::query(
-        "SELECT credential_id, secret_id, label, env_name FROM credential_fields",
-    )
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let fields =
+        sqlx::query("SELECT credential_id, secret_id, label, env_name FROM credential_fields")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
 
     let parse_ms = |text: &str| -> Option<i64> {
         crate::monitors::parse_rfc3339_secs(text).map(|secs| secs * 1000)
@@ -496,16 +493,11 @@ async fn refresh_stale_usage_with_pool(
     Ok(written)
 }
 
-pub async fn refresh_all_stale(
-    app: &AppHandle,
-    force: bool,
-) -> Result<u64, AppError> {
+pub async fn refresh_all_stale(app: &AppHandle, force: bool) -> Result<u64, AppError> {
     let path = db_path(app)?;
     let pool = match SqlitePoolOptions::new()
         .max_connections(1)
-        .connect_with(
-            SqliteConnectOptions::new().filename(&path).read_only(false),
-        )
+        .connect_with(SqliteConnectOptions::new().filename(&path).read_only(false))
         .await
     {
         Ok(pool) => pool,
@@ -516,7 +508,8 @@ pub async fn refresh_all_stale(
     };
 
     let max_age_ms = stale_threshold_ms();
-    let (monitor_updated, monitor_error) = refresh_stale_monitors(app, &pool, force, max_age_ms).await;
+    let (monitor_updated, monitor_error) =
+        refresh_stale_monitors(app, &pool, force, max_age_ms).await;
 
     let vault_unlocked = app
         .try_state::<crate::vault::VaultState>()
@@ -527,7 +520,11 @@ pub async fn refresh_all_stale(
         match refresh_stale_usage_with_pool(app, &pool, force, max_age_ms).await {
             Ok(count) => (count, false),
             Err(e) => {
-                log(app, "usage", &format!("사용량 갱신 오류: {}", sanitize(&e.to_string())));
+                log(
+                    app,
+                    "usage",
+                    &format!("사용량 갱신 오류: {}", sanitize(&e.to_string())),
+                );
                 (0, true)
             }
         }
@@ -611,10 +608,7 @@ pub fn stop_usage_scheduler(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub async fn resident_refresh_usage(
-    app: AppHandle,
-    force: Option<bool>,
-) -> Result<u64, AppError> {
+pub async fn resident_refresh_usage(app: AppHandle, force: Option<bool>) -> Result<u64, AppError> {
     refresh_all_stale(&app, force.unwrap_or(false)).await
 }
 
@@ -634,25 +628,35 @@ pub struct ResidentStatus {
 pub fn resident_status(app: AppHandle) -> ResidentStatus {
     let log = app
         .try_state::<ResidentState>()
-        .and_then(|state| state.log.lock().ok().map(|buffer| buffer.iter().cloned().collect::<Vec<_>>()))
+        .and_then(|state| {
+            state
+                .log
+                .lock()
+                .ok()
+                .map(|buffer| buffer.iter().cloned().collect::<Vec<_>>())
+        })
         .unwrap_or_default();
     let log: Vec<String> = log.iter().rev().take(60).rev().cloned().collect();
     let usage = app
         .try_state::<ResidentState>()
-        .and_then(|state| state.usage.lock().ok().map(|usage| {
-            json!({
-                "state": usage.state,
-                "ready": usage.ready,
-                "lastRefreshAt": usage.last_refresh_at,
-                "lastError": usage.last_error,
-                "updated": usage.updated,
+        .and_then(|state| {
+            state.usage.lock().ok().map(|usage| {
+                json!({
+                    "state": usage.state,
+                    "ready": usage.ready,
+                    "lastRefreshAt": usage.last_refresh_at,
+                    "lastError": usage.last_error,
+                    "updated": usage.updated,
+                })
             })
-        }))
+        })
         .unwrap_or_else(|| json!({ "state": "WAITING_FOR_VAULT", "ready": false }));
     let gpu = serde_json::to_value(crate::gpu_monitor::runtime_status(&app)).unwrap_or(Value::Null);
     let turzx = app
         .try_state::<crate::turzx::TurzxState>()
-        .map(|_| serde_json::to_value(crate::turzx::turzx_status(app.clone())).unwrap_or(Value::Null))
+        .map(|_| {
+            serde_json::to_value(crate::turzx::turzx_status(app.clone())).unwrap_or(Value::Null)
+        })
         .unwrap_or(Value::Null);
     let services = crate::local_services::definitions()
         .into_iter()
@@ -683,10 +687,22 @@ mod tests {
     fn staleness_rule_matches_five_minutes() {
         let now = 10_000_000_000i64;
         let five_min = STALE_MONITOR_MS;
-        assert!(!is_stale(Some(now - 60_000), now, five_min), "1분 전은 신선");
-        assert!(!is_stale(Some(now - five_min + 1), now, five_min), "4분 59초 전은 신선");
-        assert!(is_stale(Some(now - five_min), now, five_min), "5분 경과는 stale");
-        assert!(is_stale(Some(now - 600_000), now, five_min), "10분 경과는 stale");
+        assert!(
+            !is_stale(Some(now - 60_000), now, five_min),
+            "1분 전은 신선"
+        );
+        assert!(
+            !is_stale(Some(now - five_min + 1), now, five_min),
+            "4분 59초 전은 신선"
+        );
+        assert!(
+            is_stale(Some(now - five_min), now, five_min),
+            "5분 경과는 stale"
+        );
+        assert!(
+            is_stale(Some(now - 600_000), now, five_min),
+            "10분 경과는 stale"
+        );
         assert!(is_stale(None, now, five_min), "기록 없음은 stale");
     }
 
@@ -738,7 +754,10 @@ mod tests {
             let mut set = state.active_refreshes.lock().unwrap();
             assert!(set.insert(key.to_string()), "first acquisition succeeds");
             assert!(!set.insert(key.to_string()), "duplicate acquisition fails");
-            assert!(set.insert("monitor:opencode".to_string()), "different provider succeeds");
+            assert!(
+                set.insert("monitor:opencode".to_string()),
+                "different provider succeeds"
+            );
         }
         {
             let mut set = state.active_refreshes.lock().unwrap();
@@ -746,7 +765,10 @@ mod tests {
         }
         {
             let mut set = state.active_refreshes.lock().unwrap();
-            assert!(set.insert(key.to_string()), "re-acquisition succeeds after release");
+            assert!(
+                set.insert(key.to_string()),
+                "re-acquisition succeeds after release"
+            );
         }
     }
 
@@ -826,10 +848,11 @@ mod tests {
             };
             persist_monitor_outcome(&pool, &outcome).await.unwrap();
 
-            let global = sqlx::query("SELECT status FROM monitor_snapshots WHERE monitor = 'antigravity'")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
+            let global =
+                sqlx::query("SELECT status FROM monitor_snapshots WHERE monitor = 'antigravity'")
+                    .fetch_optional(&pool)
+                    .await
+                    .unwrap();
             assert!(global.is_some());
 
             let account = sqlx::query(
@@ -872,10 +895,12 @@ mod tests {
             };
             persist_monitor_outcome(&pool, &outcome).await.unwrap();
 
-            sqlx::query("UPDATE monitor_snapshots SET status = 'unavailable' WHERE monitor = 'antigravity'")
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                "UPDATE monitor_snapshots SET status = 'unavailable' WHERE monitor = 'antigravity'",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
 
             let row = sqlx::query(
                 "SELECT status, summary, details_json FROM monitor_snapshots WHERE monitor = 'antigravity'",
@@ -887,8 +912,15 @@ mod tests {
             let summary: Option<String> = row.get("summary");
             let details: Option<String> = row.get("details_json");
             assert_eq!(status, "unavailable");
-            assert_eq!(summary.as_deref(), Some("Pro · normal"), "details/summary must be preserved");
-            assert!(details.unwrap().contains("dev@company.com"), "email must be preserved");
+            assert_eq!(
+                summary.as_deref(),
+                Some("Pro · normal"),
+                "details/summary must be preserved"
+            );
+            assert!(
+                details.unwrap().contains("dev@company.com"),
+                "email must be preserved"
+            );
 
             let acct_row = sqlx::query(
                 "SELECT status FROM monitor_snapshots WHERE monitor = 'antigravity:dev@company.com'",
@@ -926,12 +958,15 @@ mod tests {
                 details: None,
                 message: Some("Grok 토큰이 만료되었습니다".into()),
             };
-            persist_monitor_outcome(&pool, &auth_error_outcome).await.unwrap();
-
-            let row = sqlx::query("SELECT status, summary FROM monitor_snapshots WHERE monitor = 'grok'")
-                .fetch_one(&pool)
+            persist_monitor_outcome(&pool, &auth_error_outcome)
                 .await
                 .unwrap();
+
+            let row =
+                sqlx::query("SELECT status, summary FROM monitor_snapshots WHERE monitor = 'grok'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             let status: String = row.get("status");
             let summary: Option<String> = row.get("summary");
             assert_eq!(status, "unavailable");

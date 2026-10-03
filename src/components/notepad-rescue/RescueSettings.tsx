@@ -4,11 +4,15 @@ import {
   type StorageDetailDto,
   type GcPlan,
   type GcReport,
+  type RecoveryPackageReport,
+  type DiagnosticReportDto,
   getSettings,
   updateSettings,
   getStorageDetails,
   gcPreview,
   gcExecute,
+  exportRecoveryPackage,
+  getDiagnosticReport,
   formatBytes,
 } from "../../lib/notepadRescue";
 import { Modal } from "../Modal";
@@ -41,6 +45,12 @@ export function RescueSettings({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [executingGc, setExecutingGc] = useState(false);
   const [gcReport, setGcReport] = useState<GcReport | null>(null);
+
+  // Disaster recovery & diagnostics states
+  const [exportingPackage, setExportingPackage] = useState(false);
+  const [packageReport, setPackageReport] = useState<RecoveryPackageReport | null>(null);
+  const [diagReport, setDiagReport] = useState<DiagnosticReportDto | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -132,6 +142,32 @@ export function RescueSettings({
       setError(`정리 실행 실패: ${String(e)}`);
     } finally {
       setExecutingGc(false);
+    }
+  };
+
+  const handleExportPackage = async () => {
+    try {
+      setExportingPackage(true);
+      setError(null);
+      const rep = await exportRecoveryPackage();
+      setPackageReport(rep);
+    } catch (e) {
+      setError(`재해 복구 패키지 내보내기 실패: ${String(e)}`);
+    } finally {
+      setExportingPackage(false);
+    }
+  };
+
+  const handleLoadDiagnostics = async () => {
+    try {
+      setDiagLoading(true);
+      setError(null);
+      const rep = await getDiagnosticReport();
+      setDiagReport(rep);
+    } catch (e) {
+      setError(`진단 보고서 조회 실패: ${String(e)}`);
+    } finally {
+      setDiagLoading(false);
     }
   };
 
@@ -324,6 +360,106 @@ export function RescueSettings({
               >
                 ✓ 안전 정리가 완료되었습니다: {formatBytes(gcReport.totalReclaimedBytes)} 공간 회수
                 (스냅샷 {gcReport.deletedSnapshotsCount}개, 물리 블롭 {gcReport.deletedBlobsCount}개 정리)
+              </div>
+            )}
+          </div>
+
+          {/* 재해 복구 패키지 내보내기 (Disaster Recovery Package) */}
+          <div
+            style={{
+              background: "rgba(255, 255, 255, 0.02)",
+              border: "1px solid var(--border-color, #333)",
+              borderRadius: "8px",
+              padding: "12px",
+              marginBottom: "16px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <strong>재해 복구 패키지 내보내기 (Disaster Recovery Package)</strong>
+                <p style={{ margin: "2px 0 0 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                  현재 보관된 모든 유효 메모와 참조 원시(RAW) 스냅샷을 로컬 복구 아카이브로 일괄 추출합니다.
+                </p>
+                <p style={{ margin: "2px 0 0 0", fontSize: "0.75rem", color: "#38bdf8" }}>
+                  ※ 100% 로컬 내보내기이며, 외부 전송/동기화되지 않고 시크릿/API 키는 포함되지 않습니다.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="button button-subtle"
+                onClick={handleExportPackage}
+                disabled={exportingPackage || loading}
+              >
+                {exportingPackage ? "내보내는 중…" : "패키지 내보내기"}
+              </button>
+            </div>
+
+            {packageReport && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px",
+                  background: "rgba(34, 197, 94, 0.08)",
+                  borderRadius: "6px",
+                  border: "1px solid rgba(34, 197, 94, 0.2)",
+                  fontSize: "0.8rem",
+                  color: "#4ade80",
+                }}
+              >
+                ✓ 복구 패키지 생성 완료: 노트 {packageReport.totalNotesExported}개, 원시 블롭 {packageReport.totalBlobsCopied}개
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4, wordBreak: "break-all" }}>
+                  경로: {packageReport.packagePath}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 시스템 진단 보고서 (Diagnostic Report) */}
+          <div
+            style={{
+              background: "rgba(255, 255, 255, 0.02)",
+              border: "1px solid var(--border-color, #333)",
+              borderRadius: "8px",
+              padding: "12px",
+              marginBottom: "16px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <strong>시스템 진단 보고서 (Diagnostic Report)</strong>
+                <p style={{ margin: "2px 0 0 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                  데이터 무결성 검증, 누락/고아 블롭 상태 및 스토리지 메타데이터를 진단합니다. (본문 내용 미포함)
+                </p>
+              </div>
+              <button
+                type="button"
+                className="button button-subtle"
+                onClick={handleLoadDiagnostics}
+                disabled={diagLoading}
+              >
+                {diagLoading ? "진단 중…" : "진단 보고서"}
+              </button>
+            </div>
+
+            {diagReport && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "10px",
+                  background: "rgba(59, 130, 246, 0.08)",
+                  borderRadius: "6px",
+                  border: "1px solid rgba(59, 130, 246, 0.2)",
+                  fontSize: "0.8rem",
+                }}
+              >
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "6px", color: "var(--text-muted)" }}>
+                  <div>총 노트: {diagReport.noteCount} (활성 {diagReport.activeNoteCount} / 삭제 {diagReport.deletedNoteCount})</div>
+                  <div>스냅샷: {diagReport.snapshotCount}개</div>
+                  <div>물리 블롭: {diagReport.casBlobCount}개</div>
+                  <div>유실 블롭: {diagReport.missingBlobsCount}개</div>
+                  <div>고아 블롭: {diagReport.orphanBlobsCount}개</div>
+                  <div>감시 상태: {diagReport.watcherEnabled ? "정상 실행 중" : "중지됨"}</div>
+                </div>
               </div>
             )}
           </div>

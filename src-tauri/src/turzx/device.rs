@@ -164,7 +164,13 @@ mod tests {
         for item in list_candidates() {
             println!(
                 "CAND {} score={} known={} vid={:?} pid={:?} serial={:?} desc={}",
-                item.port, item.score, item.known_device, item.vid, item.pid, item.serial_number, item.description
+                item.port,
+                item.score,
+                item.known_device,
+                item.vid,
+                item.pid,
+                item.serial_number,
+                item.description
             );
         }
     }

@@ -188,7 +188,8 @@ fn read_settings(app: &AppHandle) -> TurzxSettings {
 
 fn write_settings(app: &AppHandle, settings: &TurzxSettings) -> Result<(), AppError> {
     let path = settings_path(app)?;
-    let text = serde_json::to_string_pretty(settings).map_err(|error| AppError::Io(error.to_string()))?;
+    let text =
+        serde_json::to_string_pretty(settings).map_err(|error| AppError::Io(error.to_string()))?;
     std::fs::write(path, text)?;
     Ok(())
 }
@@ -221,12 +222,11 @@ fn rows_from_db(app: &AppHandle) -> Vec<renderer::DisplayApiRow> {
             .connect_with(options)
             .await
             .ok()?;
-        let monitors = sqlx::query(
-            "SELECT monitor, status, details_json, fetched_at FROM monitor_snapshots",
-        )
-        .fetch_all(&pool)
-        .await
-        .ok()?;
+        let monitors =
+            sqlx::query("SELECT monitor, status, details_json, fetched_at FROM monitor_snapshots")
+                .fetch_all(&pool)
+                .await
+                .ok()?;
         let usage = sqlx::query(
             "SELECT u.adapter, u.summary, u.used, u.limit_total, u.remaining, u.currency, u.fetched_at, c.name AS credential_name
              FROM usage_snapshots u LEFT JOIN credentials c ON c.id = u.credential_id",
@@ -262,7 +262,8 @@ fn rows_from_db(app: &AppHandle) -> Vec<renderer::DisplayApiRow> {
         let details: Option<String> = row.get("details_json");
         let fetched: Option<String> = row.get("fetched_at");
         let status: Option<String> = row.get("status");
-        if let Some(mut normalized) = renderer::normalize_monitor_row(&monitor, details.as_deref()) {
+        if let Some(mut normalized) = renderer::normalize_monitor_row(&monitor, details.as_deref())
+        {
             normalized.age_secs = age(fetched.as_deref());
             normalized.status = status.unwrap_or_else(|| "ok".into());
             rows.push(normalized);
@@ -289,7 +290,8 @@ fn rows_from_db(app: &AppHandle) -> Vec<renderer::DisplayApiRow> {
         );
         normalized.age_secs = age(fetched.as_deref());
         if normalized.primary_remaining_percent.is_none() && normalized.amount_text.is_none() {
-            normalized.amount_text = Some(protocol::truncate(&summary, 18)).filter(|text| !text.is_empty());
+            normalized.amount_text =
+                Some(protocol::truncate(&summary, 18)).filter(|text| !text.is_empty());
         }
         rows.push(normalized);
     }
@@ -390,7 +392,10 @@ fn system_memory() -> (Option<u64>, Option<u64>) {
     if ok == 0 || status.total_phys == 0 {
         return (None, None);
     }
-    (Some(status.total_phys.saturating_sub(status.avail_phys)), Some(status.total_phys))
+    (
+        Some(status.total_phys.saturating_sub(status.avail_phys)),
+        Some(status.total_phys),
+    )
 }
 
 #[cfg(not(windows))]
@@ -640,7 +645,10 @@ fn worker_loop(app: AppHandle) {
                     crate::resident::log(
                         &app,
                         "turzx",
-                        &format!("candidate {} ({}) score={}", found.port, found.description, found.score),
+                        &format!(
+                            "candidate {} ({}) score={}",
+                            found.port, found.description, found.score
+                        ),
                     );
                     last_logged_port = found.port.clone();
                 }
@@ -688,11 +696,23 @@ fn worker_loop(app: AppHandle) {
                     let (boot_w, boot_h) = orientation.size();
                     if let Some(active) = port.as_mut() {
                         let boot = renderer::render_boot(boot_w, boot_h);
-                        let rect = send_region(active, &boot, boot_w as usize, 0, 0, boot_w as usize - 1, boot_h as usize - 1);
+                        let rect = send_region(
+                            active,
+                            &boot,
+                            boot_w as usize,
+                            0,
+                            0,
+                            boot_w as usize - 1,
+                            boot_h as usize - 1,
+                        );
                         if rect.is_ok() {
                             crate::resident::log(&app, "turzx", "boot frame written");
                         } else if let Err(ref e) = rect {
-                            crate::resident::log(&app, "turzx", &format!("boot frame write error: {e}"));
+                            crate::resident::log(
+                                &app,
+                                "turzx",
+                                &format!("boot frame write error: {e}"),
+                            );
                         }
                     }
 
@@ -715,7 +735,11 @@ fn worker_loop(app: AppHandle) {
                 }
                 Err(error) => {
                     let err_msg = error.to_string();
-                    crate::resident::log(&app, "turzx", &format!("connect failed {}: {err_msg}", candidate.port));
+                    crate::resident::log(
+                        &app,
+                        "turzx",
+                        &format!("connect failed {}: {err_msg}", candidate.port),
+                    );
                     crate::resident::log(&app, "turzx", "state CONNECTING -> ERROR");
                     runtime_state = TurzxRuntimeState::Error;
                     set_status(&app, |status| {
@@ -741,7 +765,9 @@ fn worker_loop(app: AppHandle) {
             let snapshot = build_snapshot(&app);
             let gpu_ready = current_gpu_gen > last_seen_gpu_gen || has_usable_gpu(&snapshot.gpu);
             let api_ready = has_usable_api(&snapshot.api_usage);
-            let elapsed = connected_at.map(|at| at.elapsed()).unwrap_or(Duration::from_secs(10));
+            let elapsed = connected_at
+                .map(|at| at.elapsed())
+                .unwrap_or(Duration::from_secs(10));
             let (target_state, reason) = evaluate_waiting_state(gpu_ready, api_ready, elapsed);
 
             if let Some(target) = target_state {
@@ -813,16 +839,24 @@ fn worker_loop(app: AppHandle) {
 
         let is_first_live_frame = previous_frame.is_none();
         let outcome = (|| -> Result<(usize, &'static str), AppError> {
-            let active = port.as_mut().ok_or_else(|| AppError::Io("포트 없음".into()))?;
+            let active = port
+                .as_mut()
+                .ok_or_else(|| AppError::Io("포트 없음".into()))?;
             let rect = match previous_frame.as_deref() {
                 // 첫 프레임(또는 READY 전환 직후)은 전체 전송
                 None => Some((0u16, 0u16, width - 1, height - 1)),
-                Some(previous) => protocol::dirty_rect(previous, &frame, width_px, height_px, TILE_PX),
+                Some(previous) => {
+                    protocol::dirty_rect(previous, &frame, width_px, height_px, TILE_PX)
+                }
             };
             match rect {
                 None => Ok((0, "unchanged")),
                 Some((x0, y0, x1, y1)) => {
-                    let kind = if x0 == 0 && y0 == 0 && x1 as usize + 1 == width_px && y1 as usize + 1 == height_px {
+                    let kind = if x0 == 0
+                        && y0 == 0
+                        && x1 as usize + 1 == width_px
+                        && y1 as usize + 1 == height_px
+                    {
                         "full"
                     } else {
                         "partial"
@@ -932,7 +966,10 @@ pub fn turzx_settings(app: AppHandle) -> TurzxSettings {
 }
 
 #[tauri::command]
-pub fn turzx_save_settings(app: AppHandle, settings: TurzxSettings) -> Result<TurzxSettings, AppError> {
+pub fn turzx_save_settings(
+    app: AppHandle,
+    settings: TurzxSettings,
+) -> Result<TurzxSettings, AppError> {
     let sanitized = TurzxSettings {
         enabled: settings.enabled,
         port: settings.port.trim().to_string(),
@@ -1052,11 +1089,9 @@ pub fn turzx_preview(app: AppHandle, mode: Option<String>, page: Option<String>)
     let mode = mode.unwrap_or_else(|| "live".into());
     let settings = read_settings(&app);
     let orientation = effective_orientation(&settings);
-    let page = page.unwrap_or_else(|| {
-        match settings.page_mode.as_str() {
-            "runtime" | "api" => settings.page_mode.clone(),
-            _ => "single".into(),
-        }
+    let page = page.unwrap_or_else(|| match settings.page_mode.as_str() {
+        "runtime" | "api" => settings.page_mode.clone(),
+        _ => "single".into(),
     });
     if mode == "sample" {
         let snapshot = renderer::sample_snapshot();
@@ -1105,8 +1140,13 @@ pub fn turzx_export_preview(app: AppHandle, path: Option<String>) -> Result<Stri
     let target = path
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("turzx-ai-dashboard-preview.png"));
-    protocol::write_png(&target, preview.width as usize, preview.height as usize, &rgb)
-        .map_err(|error| AppError::Io(error.to_string()))?;
+    protocol::write_png(
+        &target,
+        preview.width as usize,
+        preview.height as usize,
+        &rgb,
+    )
+    .map_err(|error| AppError::Io(error.to_string()))?;
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -1129,7 +1169,10 @@ mod tests {
             ..Default::default()
         };
         let clamped = TurzxSettings {
-            rotation: match settings.rotation { 90 | 180 | 270 => settings.rotation, _ => 0 },
+            rotation: match settings.rotation {
+                90 | 180 | 270 => settings.rotation,
+                _ => 0,
+            },
             refresh_secs: settings.refresh_secs.clamp(1, 30),
             page_rotation_secs: settings.page_rotation_secs.clamp(5, 60),
             ..settings
@@ -1207,8 +1250,12 @@ mod tests {
             ram_used_bytes: None,
             ram_total_bytes: None,
         };
-        assert!(has_usable_gpu(&gpu), "NVML 하드웨어 지표만으로 GPU 준비로 인정되어야 함");
-        let (state, reason) = evaluate_waiting_state(has_usable_gpu(&gpu), false, Duration::from_secs(1));
+        assert!(
+            has_usable_gpu(&gpu),
+            "NVML 하드웨어 지표만으로 GPU 준비로 인정되어야 함"
+        );
+        let (state, reason) =
+            evaluate_waiting_state(has_usable_gpu(&gpu), false, Duration::from_secs(1));
         assert_eq!(state, Some(TurzxRuntimeState::Ready));
         assert_eq!(reason, "gpu ready");
     }
@@ -1219,7 +1266,7 @@ mod tests {
         // READY 전환 시 previous_frame은 None이어야 하고, full redraw 사각형이 생성되어야 함
         let mut previous_frame: Option<Vec<u8>> = Some(vec![128u8; 320 * 480 * 3]); // 부팅 프레임 캐시 가정
         assert!(previous_frame.is_some());
-        
+
         // READY 상태 전환 시 dirty 캐시 무효화 (Spec §10)
         previous_frame = None;
         assert!(previous_frame.is_none());

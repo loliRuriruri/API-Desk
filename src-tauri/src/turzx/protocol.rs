@@ -127,8 +127,12 @@ impl Orientation {
 
     pub fn size(self) -> (u16, u16) {
         match self {
-            Orientation::Portrait | Orientation::ReversePortrait => (WIDTH_PORTRAIT, HEIGHT_PORTRAIT),
-            Orientation::Landscape | Orientation::ReverseLandscape => (HEIGHT_PORTRAIT, WIDTH_PORTRAIT),
+            Orientation::Portrait | Orientation::ReversePortrait => {
+                (WIDTH_PORTRAIT, HEIGHT_PORTRAIT)
+            }
+            Orientation::Landscape | Orientation::ReverseLandscape => {
+                (HEIGHT_PORTRAIT, WIDTH_PORTRAIT)
+            }
         }
     }
 }
@@ -153,17 +157,17 @@ pub fn brightness_value(percent: u8) -> u8 {
 }
 
 pub fn brightness_packet(percent: u8) -> [u8; 6] {
-    command_packet(CMD_SET_BRIGHTNESS, brightness_value(percent) as u16, 0, 0, 0)
-}
-
-pub fn screen_packet(on: bool) -> [u8; 6] {
     command_packet(
-        if on { CMD_SCREEN_ON } else { CMD_SCREEN_OFF },
-        0,
+        CMD_SET_BRIGHTNESS,
+        brightness_value(percent) as u16,
         0,
         0,
         0,
     )
+}
+
+pub fn screen_packet(on: bool) -> [u8; 6] {
+    command_packet(if on { CMD_SCREEN_ON } else { CMD_SCREEN_OFF }, 0, 0, 0, 0)
 }
 
 #[allow(dead_code)] // 진단/복구용(화면을 흰색으로)
@@ -289,7 +293,12 @@ fn png_chunk(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 }
 
 /// RGB 프레임을 PNG로 저장한다(무압축 deflate, 외부 의존성 없음).
-pub fn write_png(path: &std::path::Path, width: usize, height: usize, rgb: &[u8]) -> std::io::Result<()> {
+pub fn write_png(
+    path: &std::path::Path,
+    width: usize,
+    height: usize,
+    rgb: &[u8],
+) -> std::io::Result<()> {
     let mut raw = Vec::with_capacity(height * (1 + width * 3));
     for y in 0..height {
         raw.push(0); // filter: none
@@ -381,7 +390,10 @@ mod tests {
     #[test]
     fn builds_orientation_packet() {
         let packet = orientation_packet(Orientation::Portrait);
-        assert_eq!(&packet[..6], &command_packet(CMD_SET_ORIENTATION, 0, 0, 0, 0));
+        assert_eq!(
+            &packet[..6],
+            &command_packet(CMD_SET_ORIENTATION, 0, 0, 0, 0)
+        );
         assert_eq!(packet[6], 100);
         assert_eq!(&packet[7..11], &[0x01, 0x40, 0x01, 0xE0]);
         let landscape = orientation_packet(Orientation::Landscape);
@@ -409,10 +421,22 @@ mod tests {
     fn orientation_transforms_and_sizes() {
         assert_eq!(Orientation::parse("landscape"), Orientation::Landscape);
         assert_eq!(Orientation::parse("Portrait"), Orientation::Portrait);
-        assert_eq!(Orientation::from_rotation(0, Orientation::Portrait).size(), (320, 480));
-        assert_eq!(Orientation::from_rotation(90, Orientation::Portrait).size(), (480, 320));
-        assert_eq!(Orientation::from_rotation(180, Orientation::Portrait).hardware_value(), 1);
-        assert_eq!(Orientation::from_rotation(270, Orientation::Portrait).hardware_value(), 3);
+        assert_eq!(
+            Orientation::from_rotation(0, Orientation::Portrait).size(),
+            (320, 480)
+        );
+        assert_eq!(
+            Orientation::from_rotation(90, Orientation::Portrait).size(),
+            (480, 320)
+        );
+        assert_eq!(
+            Orientation::from_rotation(180, Orientation::Portrait).hardware_value(),
+            1
+        );
+        assert_eq!(
+            Orientation::from_rotation(270, Orientation::Portrait).hardware_value(),
+            3
+        );
         assert_eq!(Orientation::Portrait.hardware_value(), 0);
         assert_eq!(Orientation::Landscape.hardware_value(), 2);
     }
@@ -463,7 +487,10 @@ mod tests {
         let rgb = vec![0u8; 4 * 4 * 3];
         write_png(&path, 4, 4, &rgb).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert_eq!(
+            &bytes[0..8],
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        );
         assert!(bytes.len() > 50);
         let _ = std::fs::remove_dir_all(&dir);
     }

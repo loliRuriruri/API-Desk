@@ -121,6 +121,68 @@ export interface StorageDetailDto {
   hasQuotaPressure: boolean;
 }
 
+export interface NotepadNote {
+  id: string;
+  sourceId: string;
+  displayTitle: string;
+  originalPath?: string | null;
+  isSaved: boolean;
+  isDeleted: boolean;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  deletedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RecoveryConfidence = "FULL" | "TEXT_ONLY" | "RAW_ONLY" | "UNAVAILABLE";
+
+export interface NoteRecoveryDetailDto {
+  note: NotepadNote;
+  latestSnapshot?: NotepadSnapshot | null;
+  latestValidSnapshot?: NotepadSnapshot | null;
+  latestConfidence: RecoveryConfidence;
+  validConfidence?: RecoveryConfidence | null;
+  isLatestCorrupt: boolean;
+}
+
+export interface RecoveryPackageReport {
+  packagePath: string;
+  totalNotesExported: number;
+  totalBlobsCopied: number;
+  manifestFile: string;
+  createdAt: string;
+}
+
+export interface DiagnosticReportDto {
+  rescueVersion: string;
+  schemaVersion: number;
+  noteCount: number;
+  activeNoteCount: number;
+  deletedNoteCount: number;
+  snapshotCount: number;
+  casBlobCount: number;
+  parseStatusCounts: Record<string, number>;
+  missingBlobsCount: number;
+  orphanBlobsCount: number;
+  physicalStorageBytes: number;
+  maxStorageBytes: number;
+  hasQuotaPressure: boolean;
+  watcherEnabled: boolean;
+  lastSuccessfulSnapshotAt?: string | null;
+  timestamp: string;
+}
+
+export interface RawBlobScanResult {
+  hash: string;
+  fileSize: number;
+  isValidTabstate: boolean;
+  formatVersion?: number | null;
+  recoveredTitle?: string | null;
+  recoveredTextPreview?: string | null;
+  parseError?: string | null;
+}
+
 export interface NotepadSnapshot {
   id: string;
   noteId: string;
@@ -278,6 +340,28 @@ export async function gcExecute(): Promise<GcReport> {
 
 export async function getStorageDetails(): Promise<StorageDetailDto> {
   return invoke<StorageDetailDto>("rescue_get_storage_details");
+}
+
+export async function getRecoveryDetail(noteId: string): Promise<NoteRecoveryDetailDto> {
+  return invoke<NoteRecoveryDetailDto>("rescue_get_recovery_detail", { noteId });
+}
+
+export async function exportRecoveryPackage(
+  destinationDir?: string,
+): Promise<RecoveryPackageReport> {
+  return invoke<RecoveryPackageReport>("rescue_export_package", { destinationDir });
+}
+
+export async function getDiagnosticReport(): Promise<DiagnosticReportDto> {
+  return invoke<DiagnosticReportDto>("rescue_get_diagnostics");
+}
+
+export async function scanRawStorage(): Promise<RawBlobScanResult[]> {
+  return invoke<RawBlobScanResult[]>("rescue_scan_raw_storage");
+}
+
+export async function bulkExportNotes(destinationDir?: string): Promise<string[]> {
+  return invoke<string[]>("rescue_bulk_export_notes", { destinationDir });
 }
 
 // ============================================================================

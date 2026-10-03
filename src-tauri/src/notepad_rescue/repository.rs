@@ -680,7 +680,7 @@ pub async fn get_note_summary(
 
 // ---------------------------------------------------------------- Snapshots
 
-fn map_snapshot_row(row: &sqlx::sqlite::SqliteRow) -> Result<NotepadSnapshot, AppError> {
+pub fn map_snapshot_row(row: &sqlx::sqlite::SqliteRow) -> Result<NotepadSnapshot, AppError> {
     let source_type_str: String = row
         .try_get("source_type")
         .map_err(|e| AppError::Database(e.to_string()))?;

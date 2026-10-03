@@ -1,4 +1,4 @@
-﻿use std::time::Duration;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -31,7 +31,6 @@ fn money(value: f64) -> String {
         format!("{value:.2}")
     }
 }
-
 
 pub fn epoch_secs() -> i64 {
     std::time::SystemTime::now()
@@ -135,7 +134,11 @@ pub fn parse_deepseek_balance(body: &Value) -> Result<UsageOutcome, AppError> {
             "잔액 {}{} ({})",
             symbol,
             money(total),
-            if available { "사용 가능" } else { "잔액 부족" }
+            if available {
+                "사용 가능"
+            } else {
+                "잔액 부족"
+            }
         ),
         used: None,
         limit: None,
@@ -168,10 +171,7 @@ pub fn parse_tavily_usage(body: &Value) -> Result<UsageOutcome, AppError> {
         (Some(used), Some(limit)) if limit > 0.0 => (used, limit),
         _ => match (account_usage, account_limit) {
             (Some(used), Some(limit)) if limit > 0.0 => (used, limit),
-            _ => (
-                key_usage.or(account_usage).unwrap_or(0.0),
-                0.0,
-            ),
+            _ => (key_usage.or(account_usage).unwrap_or(0.0), 0.0),
         },
     };
     let summary = if limit > 0.0 {
@@ -225,11 +225,9 @@ pub fn merge_openrouter_credits(
         0.0
     };
     let key_note = match (key.remaining, key.limit) {
-        (Some(remaining), Some(limit)) => format!(
-            " · 키 한도 ${} (남음 ${})",
-            money(limit),
-            money(remaining)
-        ),
+        (Some(remaining), Some(limit)) => {
+            format!(" · 키 한도 ${} (남음 ${})", money(limit), money(remaining))
+        }
         (Some(remaining), None) => format!(" · 키 남음 ${}", money(remaining)),
         _ => String::new(),
     };
@@ -432,10 +430,7 @@ async fn request_json(
         .await
         .map_err(|e| AppError::Network(e.to_string()))?;
     if !(200..300).contains(&status) {
-        return Ok(RawResponse {
-            status,
-            body: None,
-        });
+        return Ok(RawResponse { status, body: None });
     }
     let body = if text.len() > MAX_BODY {
         text.chars().take(MAX_BODY).collect::<String>()
@@ -503,7 +498,11 @@ pub(crate) async fn fetch_usage_with(
         .and_then(|id| vault::read_secret_string(vault_state, id).ok())
         .map(|value| value.to_string());
 
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(2_000, 30_000));
+    let timeout = Duration::from_millis(
+        timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .clamp(2_000, 30_000),
+    );
     let client = reqwest::Client::builder()
         .timeout(timeout)
         .user_agent("API-Desk/0.1 (local)")
@@ -579,10 +578,7 @@ pub(crate) async fn fetch_usage_with(
             let response = request_json(
                 &client,
                 &url,
-                &[(
-                    "Authorization".into(),
-                    format!("Bearer {secret}"),
-                )],
+                &[("Authorization".into(), format!("Bearer {secret}"))],
                 &secret,
             )
             .await?;
@@ -693,7 +689,6 @@ pub(crate) async fn fetch_usage_with(
         secret.zeroize();
     }
     result
-
 }
 
 #[cfg(test)]
@@ -761,7 +756,11 @@ mod tests {
         }))
         .unwrap();
         let merged = merge_openrouter_credits(key, Some(parsed));
-        assert!(merged.summary.contains("크레딧 $9.03 남음"), "summary: {}", merged.summary);
+        assert!(
+            merged.summary.contains("크레딧 $9.03 남음"),
+            "summary: {}",
+            merged.summary
+        );
         assert!(merged.summary.contains("충전 $10"));
         assert!(merged.summary.contains("사용 $0.97"));
         assert!(merged.summary.contains("키 한도 $1 (남음 $0.08)"));

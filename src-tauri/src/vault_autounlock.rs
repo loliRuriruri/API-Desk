@@ -65,8 +65,9 @@ pub fn save_blob_atomic(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)
         .map_err(|error| AppError::Io(format!("자동 잠금해제 파일을 쓸 수 없습니다: {error}")))?;
-    replace_file(&tmp, path)
-        .map_err(|error| AppError::Io(format!("자동 잠금해제 파일을 저장할 수 없습니다: {error}")))?;
+    replace_file(&tmp, path).map_err(|error| {
+        AppError::Io(format!("자동 잠금해제 파일을 저장할 수 없습니다: {error}"))
+    })?;
     Ok(())
 }
 
@@ -80,8 +81,16 @@ fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 
-    let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
-    let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let from_wide: Vec<u16> = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let to_wide: Vec<u16> = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     let ok = unsafe {
         MoveFileExW(
             from_wide.as_ptr(),
@@ -176,7 +185,8 @@ pub fn protect(plaintext: &[u8]) -> Result<Vec<u8>, AppError> {
                 "Windows 자동 잠금해제 보호에 실패했습니다".into(),
             ));
         }
-        let bytes = unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
+        let bytes =
+            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() };
         unsafe {
             dpapi::LocalFree(out.pb_data as *mut std::ffi::c_void);
         }
@@ -222,9 +232,9 @@ pub fn unprotect(blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, AppError> {
                 "자동 잠금해제 정보를 복호화할 수 없습니다".into(),
             ));
         }
-        let bytes = Zeroizing::new(
-            unsafe { std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec() },
-        );
+        let bytes = Zeroizing::new(unsafe {
+            std::slice::from_raw_parts(out.pb_data, out.cb_data as usize).to_vec()
+        });
         // DPAPI가 할당한 평문 버퍼도 즉시 지운다.
         unsafe {
             let slice = std::slice::from_raw_parts_mut(out.pb_data, out.cb_data as usize);
@@ -240,12 +250,16 @@ pub fn unprotect(blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, AppError> {
 
 #[cfg(not(windows))]
 pub fn protect(_plaintext: &[u8]) -> Result<Vec<u8>, AppError> {
-    Err(AppError::Vault("이 플랫폼은 자동 잠금해제를 지원하지 않습니다".into()))
+    Err(AppError::Vault(
+        "이 플랫폼은 자동 잠금해제를 지원하지 않습니다".into(),
+    ))
 }
 
 #[cfg(not(windows))]
 pub fn unprotect(_blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, AppError> {
-    Err(AppError::Vault("이 플랫폼은 자동 잠금해제를 지원하지 않습니다".into()))
+    Err(AppError::Vault(
+        "이 플랫폼은 자동 잠금해제를 지원하지 않습니다".into(),
+    ))
 }
 
 // ---------------------------------------------------------------- 비밀번호 생성/변환
@@ -263,7 +277,8 @@ pub fn generate_password() -> Result<Zeroizing<String>, AppError> {
 fn fill_random(buffer: &mut [u8]) -> Result<(), AppError> {
     use std::ffi::c_void;
     extern "system" {
-        fn BCryptGenRandom(algorithm: *mut c_void, buffer: *mut u8, length: u32, flags: u32) -> i32;
+        fn BCryptGenRandom(algorithm: *mut c_void, buffer: *mut u8, length: u32, flags: u32)
+            -> i32;
     }
     const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
     let ok = unsafe {
@@ -284,7 +299,9 @@ fn fill_random(buffer: &mut [u8]) -> Result<(), AppError> {
 fn fill_random(buffer: &mut [u8]) -> Result<(), AppError> {
     // 테스트/비Windows 환경에서는 시간 기반으로 채우지 않고 실패한다(보안 우선).
     let _ = buffer;
-    Err(AppError::Vault("이 플랫폼은 난수 생성을 지원하지 않습니다".into()))
+    Err(AppError::Vault(
+        "이 플랫폼은 난수 생성을 지원하지 않습니다".into(),
+    ))
 }
 
 #[cfg(test)]
@@ -318,7 +335,10 @@ mod tests {
         let mut blob = protect(b"secret-value").unwrap();
         let middle = blob.len() / 2;
         blob[middle] ^= 0x5A;
-        assert!(unprotect(&blob).is_err(), "변조된 블롭은 실패해야 한다(무결성)");
+        assert!(
+            unprotect(&blob).is_err(),
+            "변조된 블롭은 실패해야 한다(무결성)"
+        );
     }
 
     #[cfg(windows)]

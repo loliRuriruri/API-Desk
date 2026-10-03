@@ -174,7 +174,10 @@ mod nvml {
     }
 
     pub fn load() -> Option<Nvml> {
-        let candidates = ["nvml.dll", r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll"];
+        let candidates = [
+            "nvml.dll",
+            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll",
+        ];
         let mut module = std::ptr::null_mut();
         for candidate in candidates {
             let wide: Vec<u16> = Path::new(candidate)
@@ -255,7 +258,10 @@ fn smi_query(args: &[&str]) -> Option<String> {
 
 fn parse_optional_u64(text: &str) -> Option<u64> {
     let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("N/A") || trimmed.eq_ignore_ascii_case("[N/A]") {
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("N/A")
+        || trimmed.eq_ignore_ascii_case("[N/A]")
+    {
         return None;
     }
     trimmed.parse::<u64>().ok()
@@ -388,7 +394,9 @@ pub(crate) fn descendants_of(root: u32, identities: &HashMap<u32, ProcIdentity>)
 
 // ---------------------------------------------------------------- hints / sanitization
 
-const SECRET_MARKERS: [&str; 6] = ["api-key", "apikey", "api_key", "token", "secret", "password"];
+const SECRET_MARKERS: [&str; 6] = [
+    "api-key", "apikey", "api_key", "token", "secret", "password",
+];
 
 /// 모델/경로 힌트에서 자격증명으로 보이는 부분을 제거한다.
 pub fn sanitize_hint(text: &str) -> String {
@@ -495,7 +503,8 @@ pub fn classify_tool(process_name: &str, cmdline: Option<&str>) -> ToolKind {
     if name.contains("ollama") || command.contains("ollama") {
         return ToolKind::Ollama;
     }
-    if name.contains("llama-server") || name.contains("llama-cli") || command.contains("llama.cpp") {
+    if name.contains("llama-server") || name.contains("llama-cli") || command.contains("llama.cpp")
+    {
         return ToolKind::LlamaCpp;
     }
     if name.contains("vllm") || command.contains("vllm") {
@@ -562,7 +571,13 @@ const LAUNCHER_EXES: [&str; 13] = [
     "gamesplayassist_x64.exe",
 ];
 
-const PYTHON_HINTS: [&str; 5] = ["python.exe", "pythonw.exe", "python3.exe", "python3.11.exe", "py.exe"];
+const PYTHON_HINTS: [&str; 5] = [
+    "python.exe",
+    "pythonw.exe",
+    "python3.exe",
+    "python3.11.exe",
+    "py.exe",
+];
 
 const CUDA_HINTS: [&str; 8] = [
     "torch",
@@ -634,7 +649,11 @@ pub(crate) fn merge_raw_processes(
         }
         let entry = map.entry(*pid).or_default();
         entry.pid = *pid;
-        let source = if *compute { "nvmlCompute" } else { "nvmlGraphics" };
+        let source = if *compute {
+            "nvmlCompute"
+        } else {
+            "nvmlGraphics"
+        };
         if !entry.sources.contains(&source) {
             entry.sources.push(source);
         }
@@ -768,8 +787,7 @@ pub(crate) fn resolve_process(
     }
 
     // 3) Laya(비관리 프로세스로 발견된 경우)
-    let laya_cmdline =
-        cmdline_lower.contains("laya-serve") || cmdline_lower.contains("\\laya\\");
+    let laya_cmdline = cmdline_lower.contains("laya-serve") || cmdline_lower.contains("\\laya\\");
     if lower.contains("laya") || laya_cmdline {
         let models = ctx.laya_models.to_vec();
         return Resolution {
@@ -787,7 +805,10 @@ pub(crate) fn resolve_process(
     }
 
     // 4) llama.cpp
-    if lower.contains("llama-server") || lower.contains("llama-cli") || cmdline_lower.contains("llama.cpp") {
+    if lower.contains("llama-server")
+        || lower.contains("llama-cli")
+        || cmdline_lower.contains("llama.cpp")
+    {
         let models: Vec<String> = model_from_cmdline(cmdline).into_iter().collect();
         return Resolution {
             display_name: "llama.cpp".into(),
@@ -841,7 +862,10 @@ pub(crate) fn resolve_process(
     if is_python_like(&exe) {
         let cuda_hint = CUDA_HINTS.iter().any(|hint| cmdline_lower.contains(hint));
         let compute_evidence = raw.sources.contains(&"nvmlCompute")
-            || engine.as_deref().map(|value| value.eq_ignore_ascii_case("Compute")).unwrap_or(false);
+            || engine
+                .as_deref()
+                .map(|value| value.eq_ignore_ascii_case("Compute"))
+                .unwrap_or(false);
         if cuda_hint || compute_evidence {
             let runtime = if cmdline_lower.contains("torch") {
                 "PyTorch / CUDA"
@@ -915,7 +939,11 @@ pub(crate) fn resolve_process(
 
     // 11) 시스템 프로세스
     if SYSTEM_EXES.contains(&lower.as_str()) {
-        let runtime = if lower == "dwm.exe" { "Windows Desktop" } else { "System" };
+        let runtime = if lower == "dwm.exe" {
+            "Windows Desktop"
+        } else {
+            "System"
+        };
         return Resolution {
             display_name: exe.clone(),
             classification: "system",
@@ -1093,10 +1121,7 @@ fn snapshot_from_nvml() -> Option<(Vec<GpuInfo>, Vec<(u32, bool, Option<u64>)>)>
             });
             // compute/graphics 양쪽을 모두 모으고, 같은 PID는 병합 플래그로 남긴다.
             let mut seen: HashMap<u32, usize> = HashMap::new();
-            for (function, compute) in [
-                (nvml.compute_procs, true),
-                (nvml.graphics_procs, false),
-            ] {
+            for (function, compute) in [(nvml.compute_procs, true), (nvml.graphics_procs, false)] {
                 let Some(function) = function else {
                     continue;
                 };
@@ -1159,7 +1184,9 @@ fn managed_owners(
             .unwrap_or(id.clone());
         owner.insert(pid, (label.clone(), id.clone(), true));
         for child in descendants_of(pid, identities) {
-            owner.entry(child).or_insert((label.clone(), id.clone(), false));
+            owner
+                .entry(child)
+                .or_insert((label.clone(), id.clone(), false));
         }
     }
     for (id, label, port) in services.service_ports(app) {
@@ -1329,7 +1356,9 @@ pub(crate) fn cached_snapshot(app: &AppHandle, ttl_ms: u64) -> GpuSnapshot {
     let snapshot = refresh_snapshot(app);
     let mut cache = state.cache.lock().unwrap();
     *cache = Some((snapshot.clone(), Instant::now()));
-    state.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    state
+        .generation
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     snapshot
 }
 
@@ -1472,7 +1501,11 @@ fn sampler_loop(app: AppHandle) {
     loop {
         let stop = app
             .try_state::<GpuMonitorState>()
-            .map(|state| !state.sampler_running.load(std::sync::atomic::Ordering::Relaxed))
+            .map(|state| {
+                !state
+                    .sampler_running
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            })
             .unwrap_or(true);
         if stop {
             break;
@@ -1526,7 +1559,11 @@ fn sampler_loop(app: AppHandle) {
         }
         first_pass = false;
         // 첫 샘플 직후에는 rate 카운터 확보를 위해 짧게, 이후 1초 주기.
-        let sleep_ms = if consecutive_failures >= 3 { 5_000 } else { 1_000 };
+        let sleep_ms = if consecutive_failures >= 3 {
+            5_000
+        } else {
+            1_000
+        };
         std::thread::sleep(Duration::from_millis(sleep_ms));
     }
 }
@@ -1612,7 +1649,9 @@ mod tests {
         ProcMeta {
             name: name.to_string(),
             command_line: cmdline.map(str::to_string),
-            ancestor_names: parent.map(|_| vec!["steamwebhelper.exe".to_string()]).unwrap_or_default(),
+            ancestor_names: parent
+                .map(|_| vec!["steamwebhelper.exe".to_string()])
+                .unwrap_or_default(),
             parent,
             version: VersionInfo {
                 file_description: description.map(str::to_string),
@@ -1622,16 +1661,19 @@ mod tests {
         }
     }
 
-    fn empty_context() -> (HashMap<u32, (String, String, bool)>, Vec<String>, Vec<String>) {
+    fn empty_context() -> (
+        HashMap<u32, (String, String, bool)>,
+        Vec<String>,
+        Vec<String>,
+    ) {
         (HashMap::new(), Vec::new(), Vec::new())
     }
 
     #[test]
     fn parses_smi_gpu_line() {
-        let info = parse_smi_gpu_line(
-            "0, NVIDIA GeForce RTX 5090, 32607, 8298, 23890, 2, 47, 46.19",
-        )
-        .unwrap();
+        let info =
+            parse_smi_gpu_line("0, NVIDIA GeForce RTX 5090, 32607, 8298, 23890, 2, 47, 46.19")
+                .unwrap();
         assert_eq!(info.index, 0);
         assert_eq!(info.name, "NVIDIA GeForce RTX 5090");
         assert_eq!(info.memory_total_bytes, Some(32607 * 1024 * 1024));
@@ -1642,7 +1684,8 @@ mod tests {
 
     #[test]
     fn parses_smi_process_line_with_na() {
-        let (pid, name, memory) = parse_smi_process_line("1888, C:\\Windows\\dwm.exe, [N/A]").unwrap();
+        let (pid, name, memory) =
+            parse_smi_process_line("1888, C:\\Windows\\dwm.exe, [N/A]").unwrap();
         assert_eq!(pid, 1888);
         assert!(name.ends_with("dwm.exe"));
         assert_eq!(memory, None);
@@ -1675,8 +1718,14 @@ mod tests {
     fn classifies_tools() {
         assert_eq!(classify_tool("ollama.exe", None), ToolKind::Ollama);
         assert_eq!(classify_tool("llama-server.exe", None), ToolKind::LlamaCpp);
-        assert_eq!(classify_tool("python.exe", Some("vllm serve m")), ToolKind::Vllm);
-        assert_eq!(classify_tool("python.exe", Some("ComfyUI main.py")), ToolKind::ComfyUi);
+        assert_eq!(
+            classify_tool("python.exe", Some("vllm serve m")),
+            ToolKind::Vllm
+        );
+        assert_eq!(
+            classify_tool("python.exe", Some("ComfyUI main.py")),
+            ToolKind::ComfyUi
+        );
         assert_eq!(classify_tool("python.exe", None), ToolKind::GenericPython);
         assert_eq!(classify_tool("game.exe", None), ToolKind::Other);
     }
@@ -1684,10 +1733,34 @@ mod tests {
     #[test]
     fn finds_descendant_tree() {
         let mut identities = HashMap::new();
-        identities.insert(10, ProcIdentity { name: "laya-serve.exe".into(), parent: Some(1) });
-        identities.insert(11, ProcIdentity { name: "python.exe".into(), parent: Some(10) });
-        identities.insert(12, ProcIdentity { name: "worker.exe".into(), parent: Some(11) });
-        identities.insert(13, ProcIdentity { name: "other.exe".into(), parent: Some(1) });
+        identities.insert(
+            10,
+            ProcIdentity {
+                name: "laya-serve.exe".into(),
+                parent: Some(1),
+            },
+        );
+        identities.insert(
+            11,
+            ProcIdentity {
+                name: "python.exe".into(),
+                parent: Some(10),
+            },
+        );
+        identities.insert(
+            12,
+            ProcIdentity {
+                name: "worker.exe".into(),
+                parent: Some(11),
+            },
+        );
+        identities.insert(
+            13,
+            ProcIdentity {
+                name: "other.exe".into(),
+                parent: Some(1),
+            },
+        );
         let tree = descendants_of(10, &identities);
         assert!(tree.contains(&11));
         assert!(tree.contains(&12));
@@ -1731,7 +1804,11 @@ mod tests {
         let process = RawGpuProcess {
             pid: 1,
             sources: vec!["windowsPdh"],
-            engines: vec![("3D".into(), 72.0), ("Copy".into(), 4.0), ("Compute".into(), 12.0)],
+            engines: vec![
+                ("3D".into(), 72.0),
+                ("Copy".into(), 4.0),
+                ("Compute".into(), 12.0),
+            ],
             ..Default::default()
         };
         assert_eq!(process.headline(), Some(("3D".to_string(), 72.0)));
@@ -1766,7 +1843,10 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(choose_vram(&zero_pdh), (Some(4096), Some("nvml")));
-        let none = RawGpuProcess { pid: 4, ..Default::default() };
+        let none = RawGpuProcess {
+            pid: 4,
+            ..Default::default()
+        };
         assert_eq!(choose_vram(&none), (None, None));
     }
 
@@ -1821,7 +1901,10 @@ mod tests {
         );
         let resolution = resolve_process(&meta, &raw(20, &["nvmlCompute"]), &context);
         assert_eq!(resolution.display_name, "ComfyUI");
-        assert!(resolution.models.is_empty(), "체크포인트 근거 없으면 모델 비움");
+        assert!(
+            resolution.models.is_empty(),
+            "체크포인트 근거 없으면 모델 비움"
+        );
         assert_eq!(resolution.runtime.as_deref(), Some("ComfyUI"));
     }
 

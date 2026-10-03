@@ -123,8 +123,8 @@ pub fn open_at(paths: &VaultPaths, password: &str, create: bool) -> Result<Stron
         return Err(AppError::VaultNotInitialized);
     }
     let key = Zeroizing::new(KeyDerivation::argon2(password, &paths.salt));
-    let stronghold = Stronghold::new(&paths.vault, key.to_vec())
-        .map_err(|_| AppError::VaultUnlockFailed)?;
+    let stronghold =
+        Stronghold::new(&paths.vault, key.to_vec()).map_err(|_| AppError::VaultUnlockFailed)?;
     stronghold
         .load_client(CLIENT_PATH)
         .or_else(|err| match err {
@@ -141,9 +141,7 @@ fn open_stronghold(app: &AppHandle, password: &str) -> Result<Stronghold, AppErr
     open_at(&paths, password, false)
 }
 
-fn store_of(
-    stronghold: &Stronghold,
-) -> Result<iota_stronghold::Store, AppError> {
+fn store_of(stronghold: &Stronghold) -> Result<iota_stronghold::Store, AppError> {
     stronghold
         .get_client(CLIENT_PATH)
         .map(|client| client.store())
@@ -175,7 +173,10 @@ pub fn read_secret(state: &VaultState, secret_id: &str) -> Result<Zeroizing<Vec<
     state.with_stronghold(|stronghold| read_secret_from(stronghold, secret_id))
 }
 
-pub fn read_secret_string(state: &VaultState, secret_id: &str) -> Result<Zeroizing<String>, AppError> {
+pub fn read_secret_string(
+    state: &VaultState,
+    secret_id: &str,
+) -> Result<Zeroizing<String>, AppError> {
     let bytes = read_secret(state, secret_id)?;
     let text = String::from_utf8(bytes.to_vec())
         .map_err(|_| AppError::Vault("저장된 비밀 값이 올바른 UTF-8이 아닙니다".into()))?;
@@ -198,11 +199,7 @@ pub fn write_secret_to(
     save(stronghold)
 }
 
-pub fn write_secret(
-    state: &VaultState,
-    secret_id: &str,
-    value: &str,
-) -> Result<(), AppError> {
+pub fn write_secret(state: &VaultState, secret_id: &str, value: &str) -> Result<(), AppError> {
     state.with_stronghold(|stronghold| write_secret_to(stronghold, secret_id, value))
 }
 
@@ -349,7 +346,11 @@ pub fn run_auto_unlock(app: AppHandle) {
         AutoUnlockOutcome::Pending(auto_state, reason) => {
             state.set_auto(
                 auto_state.as_str(),
-                if reason.is_empty() { None } else { Some(reason) },
+                if reason.is_empty() {
+                    None
+                } else {
+                    Some(reason)
+                },
             );
         }
     }
@@ -457,7 +458,11 @@ pub fn vault_lock(state: State<'_, VaultState>) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub fn vault_reset(app: AppHandle, state: State<'_, VaultState>, confirm: String) -> Result<(), AppError> {
+pub fn vault_reset(
+    app: AppHandle,
+    state: State<'_, VaultState>,
+    confirm: String,
+) -> Result<(), AppError> {
     if confirm != "RESET" {
         return Err(AppError::InvalidRequest(
             "Vault 초기화를 확인하려면 RESET을 입력하세요".into(),
@@ -579,7 +584,10 @@ mod tests {
 
     #[test]
     fn masks_long_keys() {
-        assert_eq!(mask_secret("sk-proj-testfakeabcdefghA82F"), "sk-proj-••••••••••••A82F");
+        assert_eq!(
+            mask_secret("sk-proj-testfakeabcdefghA82F"),
+            "sk-proj-••••••••••••A82F"
+        );
         assert_eq!(mask_secret("sk-1234567890abcd4821"), "sk-••••••••••••4821");
         assert_eq!(mask_secret("abcdefgh"), "••••efgh");
     }
@@ -593,8 +601,14 @@ mod tests {
 
     #[test]
     fn clipboard_is_only_cleared_when_it_still_holds_the_copied_value() {
-        assert!(should_clear_clipboard("test-secret-not-a-real-key", "test-secret-not-a-real-key"));
-        assert!(!should_clear_clipboard("something the user copied later", "test-secret-not-a-real-key"));
+        assert!(should_clear_clipboard(
+            "test-secret-not-a-real-key",
+            "test-secret-not-a-real-key"
+        ));
+        assert!(!should_clear_clipboard(
+            "something the user copied later",
+            "test-secret-not-a-real-key"
+        ));
         assert!(!should_clear_clipboard("", "test-secret-not-a-real-key"));
         assert!(!should_clear_clipboard("anything", ""));
     }
@@ -655,7 +669,10 @@ mod tests {
         let protected = autounlock::protect(b"legacy-master-pass").unwrap();
         autounlock::save_blob_atomic(&blob, &protected).unwrap();
         drop(stronghold);
-        assert!(matches!(auto_unlock_with(&paths, &blob), AutoUnlockOutcome::Unlocked(_)));
+        assert!(matches!(
+            auto_unlock_with(&paths, &blob),
+            AutoUnlockOutcome::Unlocked(_)
+        ));
         let _ = std::fs::remove_dir_all(paths.vault.parent().unwrap());
     }
 
@@ -685,7 +702,10 @@ mod tests {
         match auto_unlock_with(&paths, &blob) {
             AutoUnlockOutcome::Pending(AutoUnlockState::Failed, reason) => {
                 assert!(!reason.is_empty(), "사용자 안내문 존재");
-                assert!(!reason.to_lowercase().contains("password"), "비밀 노출 금지");
+                assert!(
+                    !reason.to_lowercase().contains("password"),
+                    "비밀 노출 금지"
+                );
             }
             _ => panic!("손상된 블롭은 실패해야 한다"),
         }
