@@ -52,7 +52,8 @@ impl WatcherHandle {
     }
 }
 
-/// 시작 시 기존 탭/세션 디렉터리를 1회 스캔하여 API Desk가 꺼져 있을 때 생성된 파일들을 즉시 백업합니다.
+/// 시작 시 기존 탭/세션 디렉터리를 1회 스캔하여 API Desk가 꺼져 있을 때 생성된 파일들을 즉시 백업하고,
+/// 디스크상에서 사라진 탭은 안전하게 soft-delete (is_deleted = 1)로 상태를 동기화합니다.
 pub async fn scan_and_reconcile(
     tab_state_dir: &Path,
     window_state_dir: &Path,
@@ -72,6 +73,41 @@ pub async fn scan_and_reconcile(
                             .await
                     {
                         captured_count += 1;
+                    }
+                }
+            }
+        }
+
+        // DB상 활성(is_deleted = 0) 노트 중 디스크에서 사라진 탭을 찾아 삭제 마킹
+        if let Ok(active_notes) = super::repository::list_notes(
+            pool,
+            &super::models::NoteFilter {
+                is_deleted: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            let deleted_at = super::pipeline::now_rfc3339();
+            for note in active_notes {
+                let tab_path = tab_state_dir.join(format!("{}.bin", note.source_id));
+                let tab_0_path = tab_state_dir.join(format!("{}.0.bin", note.source_id));
+                if !tab_path.exists() && !tab_0_path.exists() {
+                    if let Ok(true) =
+                        super::repository::mark_note_deleted(pool, &note.source_id, &deleted_at)
+                            .await
+                    {
+                        if let Some(app_handle) = app {
+                            use tauri::Emitter;
+                            let _ = app_handle.emit(
+                                "rescue://note-deleted",
+                                &super::models::NoteDeletedEvent {
+                                    note_id: note.id,
+                                    source_id: note.source_id,
+                                    deleted_at: deleted_at.clone(),
+                                },
+                            );
+                        }
                     }
                 }
             }

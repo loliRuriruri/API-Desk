@@ -10,6 +10,9 @@ pub mod repository;
 pub mod snapshot;
 pub mod watcher;
 
+#[cfg(test)]
+pub mod disaster;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

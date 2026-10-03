@@ -272,11 +272,13 @@ pub fn evaluate_recovery_confidence(
     snapshot: &NotepadSnapshot,
     storage_root: &Path,
 ) -> RecoveryConfidence {
-    let has_text = snapshot
-        .recovered_text
-        .as_ref()
-        .map(|t| !t.trim().is_empty())
-        .unwrap_or(false);
+    let is_parsed = snapshot.parse_status == ParseStatus::Parsed;
+    let has_text = is_parsed
+        && snapshot
+            .recovered_text
+            .as_ref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
 
     let blob_path = storage_root.join(&snapshot.raw_snapshot_path);
     let blob_exists = blob_path.is_file();
