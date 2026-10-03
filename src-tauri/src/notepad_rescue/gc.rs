@@ -606,6 +606,8 @@ pub async fn execute_gc(
 ) -> Result<GcReport, AppError> {
     let gc_lock = get_gc_mutex();
     let _guard = gc_lock.lock().await;
+    let _cross_guard =
+        super::coordination::CrossProcessGcLock::acquire(storage_root, Duration::from_secs(10))?;
 
     // 1. 삭제 직전 최신 조건 재검증 (Revalidation)
     let plan = plan_gc(pool, storage_root, settings, now_epoch).await?;

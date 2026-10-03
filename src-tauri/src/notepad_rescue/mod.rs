@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod coordination;
 pub mod diff;
 pub mod gc;
 pub mod models;
@@ -24,6 +25,7 @@ use tokio::sync::Mutex;
 use crate::error::AppError;
 
 pub use commands::*;
+pub use coordination::*;
 pub use diff::*;
 pub use gc::*;
 pub use models::*;

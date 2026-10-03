@@ -102,6 +102,10 @@ pub async fn capture_state_file(
     // GC 동시성 방어: 신규 스냅샷 물리 CAS 저장 및 DB 등록 중 GC에 의한 삭제 방지
     let gc_lock = super::gc::get_gc_mutex();
     let _guard = gc_lock.lock().await;
+    let _cross_guard = super::coordination::CrossProcessGcLock::acquire(
+        storage_root,
+        std::time::Duration::from_secs(5),
+    );
 
     // 3. Content-Addressed Physical Storage에 원자적 저장 (물리적 중복 제거)
     let rel_snapshot_path = snapshot::store_blob(storage_root, &hash, &data)?;
