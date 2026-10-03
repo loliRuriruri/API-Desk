@@ -175,3 +175,57 @@ pub struct NoteFilter {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
+
+/// TabState 파싱 결과 구조체.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedTabState {
+    pub source_id: String,
+    pub original_path: Option<String>,
+    pub display_title: String,
+    pub is_saved: bool,
+    pub recovered_text: Option<String>,
+    pub format_version: Option<i64>,
+    pub parse_status: ParseStatus,
+}
+
+/// WindowState 파싱 결과 구조체.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedWindowState {
+    pub source_id: String,
+    pub parse_status: ParseStatus,
+}
+
+/// 백엔드 이벤트: 상태 변화.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescueStatusEvent {
+    pub enabled: bool,
+    pub watch_enabled: bool,
+    pub is_watching: bool,
+    pub message: Option<String>,
+}
+
+/// 백엔드 이벤트: 스냅샷 생성.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotCreatedEvent {
+    pub note_id: String,
+    pub source_id: String,
+    pub display_title: String,
+    pub snapshot_id: String,
+    pub content_hash: String,
+    pub source_type: SourceType,
+    pub is_saved: bool,
+    pub captured_at: String,
+}
+
+/// 백엔드 이벤트: 노트 소프트 삭제.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDeletedEvent {
+    pub note_id: String,
+    pub source_id: String,
+    pub deleted_at: String,
+}

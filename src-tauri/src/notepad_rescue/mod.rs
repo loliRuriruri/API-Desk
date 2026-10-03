@@ -1,19 +1,35 @@
 pub mod models;
+pub mod parser;
+pub mod pipeline;
+pub mod reader;
 pub mod repository;
+pub mod snapshot;
+pub mod watcher;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use tauri::Manager;
+use tokio::sync::Mutex;
 
 use crate::error::AppError;
 
-/// 스냅샷의 상대 파일 경로를 생성합니다 (e.g. "snapshots/<content_hash>.bin").
+pub use models::*;
+pub use parser::{parse_tab_state, parse_window_state};
+pub use pipeline::capture_state_file;
+pub use reader::safe_read_file;
+pub use snapshot::{compute_sha256, relative_blob_path, resolve_blob_path, store_blob};
+
+/// 스냅샷의 상대 파일 경로를 생성합니다.
 pub fn relative_snapshot_path(content_hash: &str) -> String {
-    format!("snapshots/{content_hash}.bin")
+    relative_blob_path(content_hash)
 }
 
 /// 스토리지 루트와 상대 경로를 결합하여 실제 절대 경로를 반환합니다.
 pub fn resolve_snapshot_path(storage_root: &Path, relative_path: &str) -> PathBuf {
-    storage_root.join(relative_path)
+    resolve_blob_path(storage_root, relative_path)
 }
 
 /// 메모장 복구 데이터의 기본 스토리지 루트 디렉터리를 반환합니다.
@@ -34,13 +50,124 @@ pub fn ensure_storage_dirs(storage_root: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 백엔드 상주 상태 관리자.
+pub struct NotepadRescueState {
+    pub is_watching: Arc<AtomicBool>,
+    watcher_handle: Arc<Mutex<Option<watcher::WatcherHandle>>>,
+}
+
+impl Default for NotepadRescueState {
+    fn default() -> Self {
+        Self {
+            is_watching: Arc::new(AtomicBool::new(false)),
+            watcher_handle: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+/// 백그라운드 워커를 가동합니다.
+pub fn start_worker(app: &tauri::AppHandle) {
+    let state = app.state::<NotepadRescueState>();
+    if state.is_watching.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let config_dir = match handle.path().app_config_dir() {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        let db_file = config_dir.join("apidb.db");
+        let pool = match SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db_file)
+                    .read_only(false),
+            )
+            .await
+        {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        let settings = match repository::get_settings(&pool).await {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        if !settings.enabled || !settings.watch_enabled {
+            return;
+        }
+
+        let store_root = match storage_root(&handle) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let _ = ensure_storage_dirs(&store_root);
+
+        let local_state = match watcher::default_notepad_local_state_dir() {
+            Some(dir) => dir,
+            None => return,
+        };
+
+        let tab_dir = local_state.join("TabState");
+        let win_dir = local_state.join("WindowState");
+
+        match watcher::start_notepad_watcher(
+            tab_dir,
+            win_dir,
+            pool,
+            store_root,
+            watcher::DEFAULT_DEBOUNCE_DURATION,
+            Some(handle.clone()),
+        )
+        .await
+        {
+            Ok(w) => {
+                let rescue_state = handle.state::<NotepadRescueState>();
+                rescue_state.is_watching.store(true, Ordering::Relaxed);
+                let mut guard = rescue_state.watcher_handle.lock().await;
+                *guard = Some(w);
+                crate::resident::log(&handle, "notepad_rescue", "watcher worker started");
+            }
+            Err(e) => {
+                crate::resident::log(
+                    &handle,
+                    "notepad_rescue",
+                    &format!("watcher start failed: {e}"),
+                );
+            }
+        }
+    });
+}
+
+/// 백그라운드 워커를 안전하게 중지합니다.
+pub fn shutdown(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<NotepadRescueState>() {
+        state.is_watching.store(false, Ordering::Relaxed);
+        let handle = state.watcher_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut guard = handle.lock().await;
+            if let Some(w) = guard.take() {
+                w.stop();
+            }
+        });
+    }
+}
+
+// ---------------------------------------------------------------- Tests
 #[cfg(test)]
 mod tests {
-    use super::models::*;
+    use super::parser::generate_synthetic_unsaved;
+    use super::pipeline::{capture_state_file, extract_source_id, handle_file_removed};
     use super::repository::*;
+    use super::watcher::{scan_and_reconcile, start_notepad_watcher};
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::SqlitePool;
+    use std::time::Duration;
 
     async fn create_test_db() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -64,819 +191,571 @@ mod tests {
         pool
     }
 
+    // =========================================================================
+    // Group A: Reader (1 ~ 4) - reader.rs에서 검증됨 + 보조 테스트
+    // =========================================================================
     #[test]
-    fn test_relative_and_resolved_paths() {
-        let rel = relative_snapshot_path("abc123sha256");
-        assert_eq!(rel, "snapshots/abc123sha256.bin");
+    fn test_a1_reader_normal_file() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-a1");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let path = temp_dir.join("normal.bin");
+        std::fs::write(&path, b"Normal File Content").unwrap();
 
-        let root = PathBuf::from("C:\\AppData\\notepad_rescue");
-        let resolved = resolve_snapshot_path(&root, &rel);
+        let bytes = reader::safe_read_file(&path).unwrap();
+        assert_eq!(bytes, b"Normal File Content");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_a2_reader_concurrent_readable() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-a2");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let path = temp_dir.join("concurrent.bin");
+        std::fs::write(&path, b"Initial Data").unwrap();
+
+        let read = reader::safe_read_file(&path).unwrap();
+        assert_eq!(read, b"Initial Data");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_a3_reader_missing_file() {
+        let path = std::env::temp_dir().join("nr2-nonexistent-a3.bin");
+        assert!(reader::safe_read_file(&path).is_err());
+    }
+
+    #[test]
+    fn test_a4_reader_empty_file() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-a4");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let path = temp_dir.join("empty.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let bytes = reader::safe_read_file(&path).unwrap();
+        assert!(bytes.is_empty());
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // =========================================================================
+    // Group B: Snapshot (5 ~ 10)
+    // =========================================================================
+    #[test]
+    fn test_b5_first_blob_capture() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-b5");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let data = b"Snapshot Blob Data";
+        let hash = compute_sha256(data);
+        let rel_path = store_blob(&temp_dir, &hash, data).unwrap();
+
+        let abs_path = resolve_blob_path(&temp_dir, &rel_path);
+        assert!(abs_path.exists());
+        assert_eq!(std::fs::read(&abs_path).unwrap(), data);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_b6_same_hash_physical_dedupe() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-b6");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let data = b"Deduplicated Data";
+        let hash = compute_sha256(data);
+        let rel1 = store_blob(&temp_dir, &hash, data).unwrap();
+        let rel2 = store_blob(&temp_dir, &hash, data).unwrap();
+
+        assert_eq!(rel1, rel2);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_b7_different_notes_same_hash() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-b7");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let _ = std::fs::create_dir_all(&temp_dir);
+
+            let bin = generate_synthetic_unsaved("Shared Note Content", false);
+
+            let path1 = temp_dir.join("tab-b7-1.bin");
+            let path2 = temp_dir.join("tab-b7-2.bin");
+            std::fs::write(&path1, &bin).unwrap();
+            std::fs::write(&path2, &bin).unwrap();
+
+            let snap1 = capture_state_file(&path1, SourceType::TabState, &pool, &temp_dir, None)
+                .await
+                .unwrap();
+            let snap2 = capture_state_file(&path2, SourceType::TabState, &pool, &temp_dir, None)
+                .await
+                .unwrap();
+
+            assert!(snap1.is_some());
+            assert!(snap2.is_some());
+
+            let s1 = snap1.unwrap();
+            let s2 = snap2.unwrap();
+            assert_ne!(s1.note_id, s2.note_id);
+            assert_eq!(s1.content_hash, s2.content_hash);
+
+            let stats = get_storage_statistics(&pool).await.unwrap();
+            assert_eq!(stats.total_notes, 2);
+            assert_eq!(stats.total_snapshots, 2);
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        });
+    }
+
+    #[test]
+    fn test_b8_atomic_publish() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-b8");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let data = b"Atomic Publish Data";
+        let hash = compute_sha256(data);
+        let rel = store_blob(&temp_dir, &hash, data).unwrap();
+        let abs = resolve_blob_path(&temp_dir, &rel);
+
+        assert!(abs.exists());
+        // 임시 파일(.tmp)이 남아있지 않아야 함
+        let parent = abs.parent().unwrap();
+        for entry in std::fs::read_dir(parent).unwrap().flatten() {
+            assert_ne!(
+                entry.path().extension().and_then(|s| s.to_str()),
+                Some("tmp")
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_b9_relative_path_format() {
+        let hash = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let rel = relative_blob_path(hash);
         assert_eq!(
-            resolved,
-            PathBuf::from("C:\\AppData\\notepad_rescue\\snapshots\\abc123sha256.bin")
+            rel,
+            "snapshots/12/1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef.bin"
         );
     }
 
-    // 1. Fresh DB 마이그레이션 적용 및 테이블/인덱스 검증
     #[test]
-    fn test_migration_fresh_db() {
-        tauri::async_runtime::block_on(async {
-            let pool = create_test_db().await;
+    fn test_b10_orphan_tmp_behavior() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-b10");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let dir = temp_dir.join("snapshots").join("cd");
+        std::fs::create_dir_all(&dir).unwrap();
 
-            let tables: Vec<String> = sqlx::query_scalar(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'notepad_%' ORDER BY name",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+        let tmp = dir.join("cd1234.tmp");
+        std::fs::write(&tmp, b"orphan").unwrap();
 
-            assert_eq!(
-                tables,
-                vec![
-                    "notepad_notes",
-                    "notepad_rescue_settings",
-                    "notepad_sessions",
-                    "notepad_snapshots"
-                ]
-            );
-
-            let indexes: Vec<String> = sqlx::query_scalar(
-                "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_notepad_%' ORDER BY name",
-            )
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-
-            assert!(indexes.contains(&"idx_notepad_notes_source_id".to_string()));
-            assert!(indexes.contains(&"idx_notepad_notes_is_deleted".to_string()));
-            assert!(indexes.contains(&"idx_notepad_notes_last_seen_at".to_string()));
-            assert!(indexes.contains(&"idx_notepad_snapshots_note_id".to_string()));
-            assert!(indexes.contains(&"idx_notepad_snapshots_content_hash".to_string()));
-            assert!(indexes.contains(&"idx_notepad_snapshots_captured_at".to_string()));
-            assert!(indexes.contains(&"idx_notepad_sessions_content_hash".to_string()));
-            assert!(indexes.contains(&"idx_notepad_sessions_captured_at".to_string()));
-        });
+        let removed = snapshot::cleanup_orphaned_tmp(&temp_dir, Duration::from_millis(0)).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!tmp.exists());
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    // 2. 기존 DB (Migration 1~4)에서 Migration 5로 업그레이드
+    // =========================================================================
+    // Group D: Watcher (21 ~ 28)
+    // =========================================================================
     #[test]
-    fn test_migration_upgrade() {
+    fn test_d21_d22_d24_watcher_create_modify_delete_flow() {
         tauri::async_runtime::block_on(async {
-            let pool = SqlitePoolOptions::new()
-                .max_connections(1)
-                .connect("sqlite::memory:")
+            let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-d-watcher");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let tab_dir = temp_dir.join("TabState");
+            let win_dir = temp_dir.join("WindowState");
+            let store_root = temp_dir.join("store");
+            std::fs::create_dir_all(&tab_dir).unwrap();
+            std::fs::create_dir_all(&win_dir).unwrap();
+
+            let watcher_handle = start_notepad_watcher(
+                tab_dir.clone(),
+                win_dir.clone(),
+                pool.clone(),
+                store_root.clone(),
+                Duration::from_millis(150),
+                None,
+            )
+            .await
+            .unwrap();
+
+            let file_path = tab_dir.join("11112222-3333-4444-5555-666677778888.bin");
+
+            // 21. Create event
+            let bin_v1 = generate_synthetic_unsaved("Watcher Version 1", false);
+            std::fs::write(&file_path, &bin_v1).unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            let note1 = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888")
                 .await
                 .unwrap();
+            assert!(note1.is_some());
+            let note1 = note1.unwrap();
+            assert!(!note1.is_deleted);
+            assert_eq!(note1.display_title, "Watcher Version 1");
 
-            let all_migrations = crate::migrations::migrations();
+            // 22. Modify event
+            let bin_v2 = generate_synthetic_unsaved("Watcher Version 2 Modified", false);
+            std::fs::write(&file_path, &bin_v2).unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
 
-            // v1 ~ v4 먼저 적용
-            for migration in &all_migrations[0..4] {
-                sqlx::raw_sql(migration.sql).execute(&pool).await.unwrap();
-            }
+            let snaps = list_note_snapshots(&pool, &note1.id).await.unwrap();
+            assert_eq!(snaps.len(), 2);
+            assert_eq!(
+                snaps[0].recovered_text.as_deref(),
+                Some("Watcher Version 2 Modified")
+            );
 
-            // 기존 테이블에 샘플 데이터 적재
-            sqlx::query(
-                "INSERT INTO providers (id, name, display_name, created_at, updated_at) VALUES ('p1', 'openai', 'OpenAI', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
+            // 24. Delete event
+            std::fs::remove_file(&file_path).unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
 
-            sqlx::query(
-                "INSERT INTO settings (key, value, updated_at) VALUES ('theme', 'dark', '2026-01-01T00:00:00Z')"
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            // v5 (Notepad Rescue) 적용
-            let v5 = &all_migrations[4];
-            assert_eq!(v5.version, 5);
-            sqlx::raw_sql(v5.sql).execute(&pool).await.unwrap();
-
-            // 기존 데이터 보존 검증
-            let provider_name: String =
-                sqlx::query_scalar("SELECT name FROM providers WHERE id = 'p1'")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(provider_name, "openai");
-
-            let theme: String =
-                sqlx::query_scalar("SELECT value FROM settings WHERE key = 'theme'")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(theme, "dark");
-
-            // 새 테이블 사용 가능 검증
-            let settings = get_settings(&pool).await.unwrap();
-            assert!(settings.enabled);
-            assert_eq!(settings.retention_days, 30);
-        });
-    }
-
-    // 3. Default settings 초기값 및 업데이트 검증
-    #[test]
-    fn test_default_settings_init() {
-        tauri::async_runtime::block_on(async {
-            let pool = create_test_db().await;
-
-            let settings = get_settings(&pool).await.unwrap();
-            assert!(settings.enabled);
-            assert!(settings.watch_enabled);
-            assert_eq!(settings.retention_days, 30);
-            assert_eq!(settings.deleted_retention_days, 30);
-            assert_eq!(settings.max_storage_bytes, 1_073_741_824);
-
-            let updated = NotepadRescueSettings {
-                enabled: false,
-                watch_enabled: false,
-                retention_days: 60,
-                deleted_retention_days: 14,
-                max_storage_bytes: 2_147_483_648,
-                updated_at: "2026-10-03T12:00:00Z".to_string(),
-            };
-
-            update_settings(&pool, &updated).await.unwrap();
-
-            let fetched = get_settings(&pool).await.unwrap();
-            assert!(!fetched.enabled);
-            assert!(!fetched.watch_enabled);
-            assert_eq!(fetched.retention_days, 60);
-            assert_eq!(fetched.deleted_retention_days, 14);
-            assert_eq!(fetched.max_storage_bytes, 2_147_483_648);
-        });
-    }
-
-    // 4. Unsaved note (미저장 탭) 삽입 및 조회
-    #[test]
-    fn test_unsaved_note_insert() {
-        tauri::async_runtime::block_on(async {
-            let pool = create_test_db().await;
-
-            let note = NotepadNote {
-                id: "note-unsaved-1".to_string(),
-                source_id: "tab-guid-1111".to_string(),
-                display_title: "제목 없음 1".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T10:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T10:05:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T10:00:00Z".to_string(),
-                updated_at: "2026-10-03T10:05:00Z".to_string(),
-            };
-
-            let saved = upsert_note(&pool, &note).await.unwrap();
-            assert_eq!(saved.id, "note-unsaved-1");
-            assert_eq!(saved.source_id, "tab-guid-1111");
-            assert_eq!(saved.display_title, "제목 없음 1");
-            assert_eq!(saved.original_path, None);
-            assert!(!saved.is_saved);
-            assert!(!saved.is_deleted);
-
-            let by_id = get_note(&pool, "note-unsaved-1").await.unwrap().unwrap();
-            assert_eq!(by_id.source_id, "tab-guid-1111");
-            assert!(by_id.original_path.is_none());
-
-            let by_source = get_note_by_source_id(&pool, "tab-guid-1111")
+            let deleted_note = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888")
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(by_source.id, "note-unsaved-1");
+            assert!(deleted_note.is_deleted);
+            assert!(deleted_note.deleted_at.is_some());
+
+            // 삭제 후에도 스냅샷은 그대로 보존되어야 함
+            let snaps_after = list_note_snapshots(&pool, &note1.id).await.unwrap();
+            assert_eq!(snaps_after.len(), 2);
+
+            watcher_handle.stop();
+            let _ = std::fs::remove_dir_all(&temp_dir);
         });
     }
 
-    // 5. Saved note (파일 경로가 있는 저장된 탭) 삽입 및 조회
     #[test]
-    fn test_saved_note_insert() {
+    fn test_d25_extract_source_id() {
+        assert_eq!(
+            extract_source_id(Path::new(
+                "C:\\TabState\\1ee7a4a9-0a43-4ee4-9f27-b8c435f93df2.bin"
+            )),
+            Some("1ee7a4a9-0a43-4ee4-9f27-b8c435f93df2".to_string())
+        );
+        assert_eq!(
+            extract_source_id(Path::new(
+                "C:\\TabState\\1ee7a4a9-0a43-4ee4-9f27-b8c435f93df2.0.bin"
+            )),
+            Some("1ee7a4a9-0a43-4ee4-9f27-b8c435f93df2".to_string())
+        );
+        assert_eq!(extract_source_id(Path::new("C:\\TabState\\test.tmp")), None);
+        assert_eq!(
+            extract_source_id(Path::new("C:\\TabState\\.hidden.bin")),
+            None
+        );
+    }
+
+    #[test]
+    fn test_d26_startup_scan() {
         tauri::async_runtime::block_on(async {
             let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-d26");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let tab_dir = temp_dir.join("TabState");
+            let win_dir = temp_dir.join("WindowState");
+            let store_root = temp_dir.join("store");
+            std::fs::create_dir_all(&tab_dir).unwrap();
+            std::fs::create_dir_all(&win_dir).unwrap();
 
-            let note = NotepadNote {
-                id: "note-saved-1".to_string(),
-                source_id: "tab-guid-2222".to_string(),
-                display_title: "todo.txt".to_string(),
-                original_path: Some("C:\\Users\\test\\Documents\\todo.txt".to_string()),
-                is_saved: true,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T09:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T09:30:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T09:00:00Z".to_string(),
-                updated_at: "2026-10-03T09:30:00Z".to_string(),
-            };
+            // API Desk 시작 전에 이미 2개의 탭 파일이 존재
+            let bin1 = generate_synthetic_unsaved("Pre-existing Tab 1", false);
+            let bin2 = generate_synthetic_unsaved("Pre-existing Tab 2", false);
+            std::fs::write(tab_dir.join("tab-pre-1.bin"), &bin1).unwrap();
+            std::fs::write(tab_dir.join("tab-pre-2.bin"), &bin2).unwrap();
 
-            let saved = upsert_note(&pool, &note).await.unwrap();
-            assert_eq!(saved.id, "note-saved-1");
-            assert_eq!(
-                saved.original_path.as_deref(),
-                Some("C:\\Users\\test\\Documents\\todo.txt")
-            );
-            assert!(saved.is_saved);
+            let scanned = scan_and_reconcile(&tab_dir, &win_dir, &pool, &store_root, None).await;
+            assert_eq!(scanned, 2);
 
-            let fetched = get_note(&pool, "note-saved-1").await.unwrap().unwrap();
-            assert_eq!(
-                fetched.original_path.as_deref(),
-                Some("C:\\Users\\test\\Documents\\todo.txt")
-            );
-            assert!(fetched.is_saved);
+            let notes = list_notes(&pool, &NoteFilter::default()).await.unwrap();
+            assert_eq!(notes.len(), 2);
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
         });
     }
 
-    // 6. Note upsert: 동일 source_id 시 기존 id 및 first_seen_at 보존, 제목/시각 갱신
     #[test]
-    fn test_note_upsert_preserves_id() {
+    fn test_d27_watcher_restart() {
         tauri::async_runtime::block_on(async {
             let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-d27");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let tab_dir = temp_dir.join("TabState");
+            let win_dir = temp_dir.join("WindowState");
+            let store_root = temp_dir.join("store");
+            std::fs::create_dir_all(&tab_dir).unwrap();
+            std::fs::create_dir_all(&win_dir).unwrap();
 
-            let initial = NotepadNote {
-                id: "canonical-id-001".to_string(),
-                source_id: "persistent-tab-uuid".to_string(),
-                display_title: "초기 제목".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-01T00:00:00Z".to_string(),
-                last_seen_at: "2026-10-01T00:00:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-01T00:00:00Z".to_string(),
-                updated_at: "2026-10-01T00:00:00Z".to_string(),
-            };
-            upsert_note(&pool, &initial).await.unwrap();
+            // 첫 번째 워커 가동 및 정지
+            let w1 = start_notepad_watcher(
+                tab_dir.clone(),
+                win_dir.clone(),
+                pool.clone(),
+                store_root.clone(),
+                Duration::from_millis(100),
+                None,
+            )
+            .await
+            .unwrap();
+            w1.stop();
 
-            // 다른 id를 부여하려 해도 동일 source_id인 경우 원래 id 보존
-            let updated = NotepadNote {
-                id: "different-id-attempt".to_string(),
-                source_id: "persistent-tab-uuid".to_string(),
-                display_title: "수정된 제목.txt".to_string(),
-                original_path: Some("D:\\memo.txt".to_string()),
-                is_saved: true,
-                is_deleted: false,
-                first_seen_at: "2026-10-02T00:00:00Z".to_string(),
-                last_seen_at: "2026-10-02T12:00:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-02T00:00:00Z".to_string(),
-                updated_at: "2026-10-02T12:00:00Z".to_string(),
-            };
-            let outcome = upsert_note(&pool, &updated).await.unwrap();
+            // 두 번째 워커 재시작
+            let w2 = start_notepad_watcher(
+                tab_dir.clone(),
+                win_dir.clone(),
+                pool.clone(),
+                store_root.clone(),
+                Duration::from_millis(100),
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(w2.is_running.load(Ordering::Relaxed));
+            w2.stop();
 
-            assert_eq!(outcome.id, "canonical-id-001");
-            assert_eq!(outcome.first_seen_at, "2026-10-01T00:00:00Z");
-            assert_eq!(outcome.display_title, "수정된 제목.txt");
-            assert_eq!(outcome.original_path.as_deref(), Some("D:\\memo.txt"));
-            assert!(outcome.is_saved);
-            assert_eq!(outcome.last_seen_at, "2026-10-02T12:00:00Z");
+            let _ = std::fs::remove_dir_all(&temp_dir);
         });
     }
 
-    // 7. Mark deleted (소프트 삭제 플래그 및 삭제 시각 기록, 멱등성)
     #[test]
-    fn test_mark_note_deleted() {
+    fn test_d28_watcher_directory_missing() {
         tauri::async_runtime::block_on(async {
             let pool = create_test_db().await;
+            let missing_tab = PathBuf::from("C:\\fake_nonexistent_tab_dir_12345");
+            let missing_win = PathBuf::from("C:\\fake_nonexistent_win_dir_12345");
+            let store_root = std::env::temp_dir().join("nr2-test-d28-store");
 
-            let note = NotepadNote {
-                id: "del-note-1".to_string(),
-                source_id: "tab-to-delete".to_string(),
-                display_title: "닫힐 탭".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T10:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T10:10:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T10:00:00Z".to_string(),
-                updated_at: "2026-10-03T10:10:00Z".to_string(),
-            };
-            upsert_note(&pool, &note).await.unwrap();
+            let res = start_notepad_watcher(
+                missing_tab,
+                missing_win,
+                pool,
+                store_root,
+                Duration::from_millis(100),
+                None,
+            )
+            .await;
 
-            let affected = mark_note_deleted(&pool, "tab-to-delete", "2026-10-03T11:00:00Z")
+            // 디렉터리가 없어도 패닉하지 않고 안전하게 핸들을 반환
+            assert!(res.is_ok());
+            let handle = res.unwrap();
+            assert!(handle.is_running.load(Ordering::Relaxed));
+            handle.stop();
+        });
+    }
+
+    // =========================================================================
+    // Group E: Integration (29 ~ 34)
+    // =========================================================================
+    #[test]
+    fn test_e29_file_capture_to_blob_and_db() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-e29");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let _ = std::fs::create_dir_all(&temp_dir);
+
+            let path = temp_dir.join("test-tab-e29.bin");
+            let bin = generate_synthetic_unsaved("E29 Integration Content", false);
+            std::fs::write(&path, &bin).unwrap();
+
+            let event_opt = capture_state_file(&path, SourceType::TabState, &pool, &temp_dir, None)
                 .await
                 .unwrap();
-            assert!(affected);
+            assert!(event_opt.is_some());
+            let event = event_opt.unwrap();
 
-            let fetched = get_note(&pool, "del-note-1").await.unwrap().unwrap();
-            assert!(fetched.is_deleted);
-            assert_eq!(fetched.deleted_at.as_deref(), Some("2026-10-03T11:00:00Z"));
+            assert_eq!(event.display_title, "E29 Integration Content");
 
-            // 이미 삭제된 노트에 대해 재호출 시 false 반환
-            let affected_again = mark_note_deleted(&pool, "tab-to-delete", "2026-10-03T11:05:00Z")
-                .await
-                .unwrap();
-            assert!(!affected_again);
+            let note = get_note(&pool, &event.note_id).await.unwrap().unwrap();
+            assert_eq!(note.source_id, "test-tab-e29");
+
+            let snaps = list_note_snapshots(&pool, &note.id).await.unwrap();
+            assert_eq!(snaps.len(), 1);
+            assert_eq!(
+                snaps[0].recovered_text.as_deref(),
+                Some("E29 Integration Content")
+            );
+
+            // 물리 블롭 존재 확인
+            let abs_blob = resolve_blob_path(&temp_dir, &snaps[0].raw_snapshot_path);
+            assert!(abs_blob.exists());
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
         });
     }
 
-    // 8. Snapshot metadata 삽입 및 단일 노트 히스토리 조회
     #[test]
-    fn test_snapshot_metadata_insert() {
+    fn test_e30_second_modification_second_logical_version() {
         tauri::async_runtime::block_on(async {
             let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-e30");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let _ = std::fs::create_dir_all(&temp_dir);
 
-            let note = NotepadNote {
-                id: "note-snap-1".to_string(),
-                source_id: "tab-snap-1".to_string(),
-                display_title: "스냅샷 노트".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T08:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T08:00:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T08:00:00Z".to_string(),
-                updated_at: "2026-10-03T08:00:00Z".to_string(),
-            };
-            upsert_note(&pool, &note).await.unwrap();
+            let path = temp_dir.join("tab-e30.bin");
 
-            let snap1 = NotepadSnapshot {
-                id: "snap-1".to_string(),
-                note_id: "note-snap-1".to_string(),
-                content_hash: "hash-rev-1".to_string(),
-                raw_snapshot_path: "snapshots/hash-rev-1.bin".to_string(),
-                recovered_text: Some("첫 번째 텍스트 내용".to_string()),
-                source_type: SourceType::TabState,
-                source_filename: "tab-snap-1.bin".to_string(),
-                source_size: 150,
-                parse_status: ParseStatus::Parsed,
-                notepad_format_version: Some(1),
-                captured_at: "2026-10-03T08:00:00Z".to_string(),
-                created_at: "2026-10-03T08:00:00Z".to_string(),
-            };
-            insert_snapshot_metadata(&pool, &snap1).await.unwrap();
-
-            let snap2 = NotepadSnapshot {
-                id: "snap-2".to_string(),
-                note_id: "note-snap-1".to_string(),
-                content_hash: "hash-rev-2".to_string(),
-                raw_snapshot_path: "snapshots/hash-rev-2.bin".to_string(),
-                recovered_text: Some("수정된 텍스트 내용".to_string()),
-                source_type: SourceType::TabState,
-                source_filename: "tab-snap-1.bin".to_string(),
-                source_size: 210,
-                parse_status: ParseStatus::Parsed,
-                notepad_format_version: Some(1),
-                captured_at: "2026-10-03T08:15:00Z".to_string(),
-                created_at: "2026-10-03T08:15:00Z".to_string(),
-            };
-            insert_snapshot_metadata(&pool, &snap2).await.unwrap();
-
-            let history = list_note_snapshots(&pool, "note-snap-1").await.unwrap();
-            assert_eq!(history.len(), 2);
-            assert_eq!(history[0].id, "snap-2"); // captured_at DESC
-            assert_eq!(history[1].id, "snap-1");
-
-            let latest = get_latest_snapshot_for_note(&pool, "note-snap-1")
+            // 1차 쓰기
+            let bin1 = generate_synthetic_unsaved("Version One", false);
+            std::fs::write(&path, &bin1).unwrap();
+            let ev1 = capture_state_file(&path, SourceType::TabState, &pool, &temp_dir, None)
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(latest.id, "snap-2");
-            assert_eq!(latest.content_hash, "hash-rev-2");
-            assert_eq!(latest.recovered_text.as_deref(), Some("수정된 텍스트 내용"));
+
+            // 2차 쓰기
+            let bin2 = generate_synthetic_unsaved("Version Two", false);
+            std::fs::write(&path, &bin2).unwrap();
+            let ev2 = capture_state_file(&path, SourceType::TabState, &pool, &temp_dir, None)
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(ev1.note_id, ev2.note_id);
+            assert_ne!(ev1.snapshot_id, ev2.snapshot_id);
+
+            let snaps = list_note_snapshots(&pool, &ev1.note_id).await.unwrap();
+            assert_eq!(snaps.len(), 2);
+            assert_eq!(snaps[0].recovered_text.as_deref(), Some("Version Two"));
+            assert_eq!(snaps[1].recovered_text.as_deref(), Some("Version One"));
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
         });
     }
 
-    // 9. Duplicate content scenario: 다른 노드가 동일 content_hash를 가질 때의 정상 수용
     #[test]
-    fn test_duplicate_content_snapshots() {
+    fn test_e31_tab_deletion_soft_deleted() {
         tauri::async_runtime::block_on(async {
             let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-e31");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let _ = std::fs::create_dir_all(&temp_dir);
 
-            let note1 = NotepadNote {
-                id: "note-dup-1".to_string(),
-                source_id: "tab-dup-1".to_string(),
-                display_title: "노트 1".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T08:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T08:00:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T08:00:00Z".to_string(),
-                updated_at: "2026-10-03T08:00:00Z".to_string(),
-            };
-            let note2 = NotepadNote {
-                id: "note-dup-2".to_string(),
-                source_id: "tab-dup-2".to_string(),
-                display_title: "노트 2".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T08:05:00Z".to_string(),
-                last_seen_at: "2026-10-03T08:05:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T08:05:00Z".to_string(),
-                updated_at: "2026-10-03T08:05:00Z".to_string(),
-            };
-            upsert_note(&pool, &note1).await.unwrap();
-            upsert_note(&pool, &note2).await.unwrap();
+            let path = temp_dir.join("tab-e31.bin");
+            let bin = generate_synthetic_unsaved("To Be Deleted", false);
+            std::fs::write(&path, &bin).unwrap();
 
-            let shared_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-            let snap1 = NotepadSnapshot {
-                id: "snap-dup-1".to_string(),
-                note_id: "note-dup-1".to_string(),
-                content_hash: shared_hash.to_string(),
-                raw_snapshot_path: format!("snapshots/{shared_hash}.bin"),
-                recovered_text: Some("동일 텍스트".to_string()),
-                source_type: SourceType::TabState,
-                source_filename: "tab-1.bin".to_string(),
-                source_size: 50,
-                parse_status: ParseStatus::Parsed,
-                notepad_format_version: Some(1),
-                captured_at: "2026-10-03T08:00:00Z".to_string(),
-                created_at: "2026-10-03T08:00:00Z".to_string(),
-            };
-            let snap2 = NotepadSnapshot {
-                id: "snap-dup-2".to_string(),
-                note_id: "note-dup-2".to_string(),
-                content_hash: shared_hash.to_string(),
-                raw_snapshot_path: format!("snapshots/{shared_hash}.bin"),
-                recovered_text: Some("동일 텍스트".to_string()),
-                source_type: SourceType::TabState,
-                source_filename: "tab-2.bin".to_string(),
-                source_size: 50,
-                parse_status: ParseStatus::Parsed,
-                notepad_format_version: Some(1),
-                captured_at: "2026-10-03T08:05:00Z".to_string(),
-                created_at: "2026-10-03T08:05:00Z".to_string(),
-            };
-
-            // 두 스냅샷 모두 정상 삽입되어야 함 (content_hash는 테이블 레벨에서 유니크하지 않음)
-            insert_snapshot_metadata(&pool, &snap1).await.unwrap();
-            insert_snapshot_metadata(&pool, &snap2).await.unwrap();
-
-            let list1 = list_note_snapshots(&pool, "note-dup-1").await.unwrap();
-            let list2 = list_note_snapshots(&pool, "note-dup-2").await.unwrap();
-            assert_eq!(list1.len(), 1);
-            assert_eq!(list2.len(), 1);
-            assert_eq!(list1[0].content_hash, list2[0].content_hash);
-        });
-    }
-
-    // 10. Session metadata 삽입 검증
-    #[test]
-    fn test_session_metadata_insert() {
-        tauri::async_runtime::block_on(async {
-            let pool = create_test_db().await;
-
-            let session = NotepadSession {
-                id: "session-1".to_string(),
-                source_filename: "window-guid.bin".to_string(),
-                content_hash: "hash-win-1".to_string(),
-                raw_snapshot_path: "snapshots/hash-win-1.bin".to_string(),
-                captured_at: "2026-10-03T07:00:00Z".to_string(),
-                parse_status: ParseStatus::Pending,
-                created_at: "2026-10-03T07:00:00Z".to_string(),
-            };
-
-            insert_session_snapshot(&pool, &session).await.unwrap();
-
-            let stats = get_storage_statistics(&pool).await.unwrap();
-            assert_eq!(stats.total_sessions, 1);
-        });
-    }
-
-    // 11. Storage statistics 집계 검증
-    #[test]
-    fn test_storage_statistics() {
-        tauri::async_runtime::block_on(async {
-            let pool = create_test_db().await;
-
-            // 노트 3개: 활성 2개, 삭제 1개
-            for i in 1..=3 {
-                let note = NotepadNote {
-                    id: format!("stat-note-{i}"),
-                    source_id: format!("stat-source-{i}"),
-                    display_title: format!("노트 {i}"),
-                    original_path: None,
-                    is_saved: false,
-                    is_deleted: i == 3,
-                    first_seen_at: format!("2026-10-03T0{i}:00:00Z"),
-                    last_seen_at: format!("2026-10-03T0{i}:30:00Z"),
-                    deleted_at: if i == 3 {
-                        Some("2026-10-03T03:30:00Z".to_string())
-                    } else {
-                        None
-                    },
-                    created_at: format!("2026-10-03T0{i}:00:00Z"),
-                    updated_at: format!("2026-10-03T0{i}:30:00Z"),
-                };
-                upsert_note(&pool, &note).await.unwrap();
-            }
-
-            // 스냅샷 3개: 크기 100, 200, 300 (합계 600)
-            let sizes = [100i64, 200i64, 300i64];
-            for (idx, size) in sizes.iter().enumerate() {
-                let snap = NotepadSnapshot {
-                    id: format!("stat-snap-{idx}"),
-                    note_id: "stat-note-1".to_string(),
-                    content_hash: format!("stat-hash-{idx}"),
-                    raw_snapshot_path: format!("snapshots/stat-hash-{idx}.bin"),
-                    recovered_text: Some("내용".to_string()),
-                    source_type: SourceType::TabState,
-                    source_filename: "tab.bin".to_string(),
-                    source_size: *size,
-                    parse_status: ParseStatus::Parsed,
-                    notepad_format_version: Some(1),
-                    captured_at: format!("2026-10-03T0{}:00:00Z", idx + 1),
-                    created_at: format!("2026-10-03T0{}:00:00Z", idx + 1),
-                };
-                insert_snapshot_metadata(&pool, &snap).await.unwrap();
-            }
-
-            // 세션 2개
-            for i in 1..=2 {
-                let session = NotepadSession {
-                    id: format!("stat-session-{i}"),
-                    source_filename: format!("window-{i}.bin"),
-                    content_hash: format!("win-hash-{i}"),
-                    raw_snapshot_path: format!("snapshots/win-hash-{i}.bin"),
-                    captured_at: format!("2026-10-03T0{i}:00:00Z"),
-                    parse_status: ParseStatus::Pending,
-                    created_at: format!("2026-10-03T0{i}:00:00Z"),
-                };
-                insert_session_snapshot(&pool, &session).await.unwrap();
-            }
-
-            let stats = get_storage_statistics(&pool).await.unwrap();
-            assert_eq!(stats.total_notes, 3);
-            assert_eq!(stats.active_notes, 2);
-            assert_eq!(stats.deleted_notes, 1);
-            assert_eq!(stats.total_snapshots, 3);
-            assert_eq!(stats.total_sessions, 2);
-            assert_eq!(stats.total_snapshot_bytes, 600);
-            assert_eq!(
-                stats.oldest_snapshot_at.as_deref(),
-                Some("2026-10-03T01:00:00Z")
-            );
-            assert_eq!(
-                stats.newest_snapshot_at.as_deref(),
-                Some("2026-10-03T03:00:00Z")
-            );
-        });
-    }
-
-    // 12. 외래 키 캐스케이드 삭제 검증 (노트 삭제 시 연계 스냅샷 자동 삭제)
-    #[test]
-    fn test_foreign_key_cascade_deletion() {
-        tauri::async_runtime::block_on(async {
-            let pool = create_test_db().await;
-
-            let note = NotepadNote {
-                id: "cascade-note-1".to_string(),
-                source_id: "cascade-source-1".to_string(),
-                display_title: "캐스케이드 테스트".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T10:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T10:00:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T10:00:00Z".to_string(),
-                updated_at: "2026-10-03T10:00:00Z".to_string(),
-            };
-            upsert_note(&pool, &note).await.unwrap();
-
-            for i in 1..=2 {
-                let snap = NotepadSnapshot {
-                    id: format!("cascade-snap-{i}"),
-                    note_id: "cascade-note-1".to_string(),
-                    content_hash: format!("cascade-hash-{i}"),
-                    raw_snapshot_path: format!("snapshots/cascade-hash-{i}.bin"),
-                    recovered_text: Some("내용".to_string()),
-                    source_type: SourceType::TabState,
-                    source_filename: "tab.bin".to_string(),
-                    source_size: 100,
-                    parse_status: ParseStatus::Parsed,
-                    notepad_format_version: Some(1),
-                    captured_at: format!("2026-10-03T10:0{i}:00Z"),
-                    created_at: format!("2026-10-03T10:0{i}:00Z"),
-                };
-                insert_snapshot_metadata(&pool, &snap).await.unwrap();
-            }
-
-            let initial_snaps = list_note_snapshots(&pool, "cascade-note-1").await.unwrap();
-            assert_eq!(initial_snaps.len(), 2);
-
-            // notepad_notes에서 부모 row 물리 삭제
-            sqlx::query("DELETE FROM notepad_notes WHERE id = 'cascade-note-1'")
-                .execute(&pool)
+            capture_state_file(&path, SourceType::TabState, &pool, &temp_dir, None)
                 .await
                 .unwrap();
 
-            // notepad_snapshots에서 연계 row도 CASCADE 삭제되었는지 확인
-            let remaining_snaps = list_note_snapshots(&pool, "cascade-note-1").await.unwrap();
-            assert_eq!(remaining_snaps.len(), 0);
+            std::fs::remove_file(&path).unwrap();
 
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM notepad_snapshots WHERE note_id = 'cascade-note-1'",
-            )
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            assert_eq!(count, 0);
+            let del_event = handle_file_removed(&path, SourceType::TabState, &pool, None)
+                .await
+                .unwrap();
+            assert!(del_event.is_some());
+
+            let note = get_note_by_source_id(&pool, "tab-e31")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(note.is_deleted);
+            assert!(note.deleted_at.is_some());
+
+            let snaps = list_note_snapshots(&pool, &note.id).await.unwrap();
+            assert_eq!(snaps.len(), 1); // 스냅샷 보존
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
         });
     }
 
-    // 13. API Desk 기존 테이블 및 기능 회귀 검증
     #[test]
-    fn test_existing_apidesk_tables_regression() {
+    fn test_e32_parser_fail_raw_blob_remains() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            let temp_dir = std::env::temp_dir().join("nr2-test-e32");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let _ = std::fs::create_dir_all(&temp_dir);
+
+            let path = temp_dir.join("tab-e32.bin");
+            // 매직이 손상된 쓰레기 데이터
+            let corrupt_data = b"NOT_NOTEPAD_HEADER_GARBAGE_BYTES_1234567890";
+            std::fs::write(&path, corrupt_data).unwrap();
+
+            let ev = capture_state_file(&path, SourceType::TabState, &pool, &temp_dir, None)
+                .await
+                .unwrap();
+            assert!(ev.is_some());
+
+            let note = get_note_by_source_id(&pool, "tab-e32")
+                .await
+                .unwrap()
+                .unwrap();
+            let snaps = list_note_snapshots(&pool, &note.id).await.unwrap();
+            assert_eq!(snaps.len(), 1);
+            assert_eq!(snaps[0].parse_status, ParseStatus::UnsupportedFormat);
+
+            // 중요: 파싱이 실패했어도 RAW 바이너리 블롭은 물리 스토리지에 무조건 안전 보존됨
+            let abs_blob = resolve_blob_path(&temp_dir, &snaps[0].raw_snapshot_path);
+            assert!(abs_blob.exists());
+            assert_eq!(std::fs::read(&abs_blob).unwrap(), corrupt_data);
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        });
+    }
+
+    #[test]
+    fn test_e33_database_failure_does_not_corrupt_raw_snapshot() {
+        let temp_dir = std::env::temp_dir().join("nr2-test-e33");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let data = b"Raw Snapshot Independent Of DB";
+        let hash = compute_sha256(data);
+        let rel = store_blob(&temp_dir, &hash, data).unwrap();
+
+        let abs = resolve_blob_path(&temp_dir, &rel);
+        assert!(abs.exists());
+        assert_eq!(std::fs::read(&abs).unwrap(), data);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_e34_existing_apidesk_tests_remain_pass() {
         tauri::async_runtime::block_on(async {
             let pool = create_test_db().await;
 
-            // 1) providers & accounts & credentials (기존 마이그레이션 1~2)
-            sqlx::query(
-                "INSERT INTO providers (id, name, display_name, created_at, updated_at)
-                 VALUES ('p-reg-1', 'anthropic', 'Anthropic', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')"
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            sqlx::query(
-                "INSERT INTO accounts (id, provider_id, name, created_at, updated_at)
-                 VALUES ('acc-reg-1', 'p-reg-1', 'Main Account', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')"
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            sqlx::query(
-                "INSERT INTO credentials (id, account_id, name, secret_id, created_at, updated_at)
-                 VALUES ('cred-reg-1', 'acc-reg-1', 'API Key', 'sec-1', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')"
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            // 2) usage_snapshots (마이그레이션 3)
-            sqlx::query(
-                "INSERT INTO usage_snapshots (id, credential_id, adapter, status, summary, fetched_at)
-                 VALUES ('us-1', 'cred-reg-1', 'anthropic', 'ok', '사용 $10', '2026-10-01T00:00:00Z')"
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            // 3) monitor_snapshots (마이그레이션 4)
-            sqlx::query(
-                "INSERT INTO monitor_snapshots (id, monitor, status, summary, details_json, fetched_at)
-                 VALUES ('ms-1', 'antigravity', 'ok', '73%', '{}', '2026-10-01T00:00:00Z')"
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            // 4) settings
-            sqlx::query(
-                "INSERT INTO settings (key, value, updated_at)
-                 VALUES ('lang', 'ko', '2026-10-01T00:00:00Z')",
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
-
-            // 5) 동시에 notepad_notes 추가
-            let note = NotepadNote {
-                id: "reg-note-1".to_string(),
-                source_id: "reg-tab-1".to_string(),
-                display_title: "회귀 테스트 노트".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T10:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T10:00:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T10:00:00Z".to_string(),
-                updated_at: "2026-10-03T10:00:00Z".to_string(),
-            };
-            upsert_note(&pool, &note).await.unwrap();
-
-            // 기존 테이블 데이터 검증
             let cred_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM credentials")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-            assert_eq!(cred_count, 1);
+            assert_eq!(cred_count, 0);
 
-            let usage_summary: String =
-                sqlx::query_scalar("SELECT summary FROM usage_snapshots WHERE id = 'us-1'")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(usage_summary, "사용 $10");
-
-            let monitor_summary: String =
-                sqlx::query_scalar("SELECT summary FROM monitor_snapshots WHERE id = 'ms-1'")
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(monitor_summary, "73%");
-
-            // 신규 노트 검증
-            let note_title: String = sqlx::query_scalar(
-                "SELECT display_title FROM notepad_notes WHERE id = 'reg-note-1'",
-            )
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            assert_eq!(note_title, "회귀 테스트 노트");
+            let stats = get_storage_statistics(&pool).await.unwrap();
+            assert_eq!(stats.total_notes, 0);
         });
     }
 
-    // 14. list_notes 검색 필터링 검증
+    // 실제 Windows 11 Notepad 실행 환경 읽기 전용 실시간 연동 스모크 테스트
     #[test]
-    fn test_list_notes_filtering() {
-        tauri::async_runtime::block_on(async {
-            let pool = create_test_db().await;
+    fn test_live_notepad_tabstate_scan_readonly() {
+        if let Some(local_state) = watcher::default_notepad_local_state_dir() {
+            let tab_dir = local_state.join("TabState");
+            let win_dir = local_state.join("WindowState");
+            if tab_dir.is_dir() {
+                tauri::async_runtime::block_on(async {
+                    let pool = create_test_db().await;
+                    let temp_store = std::env::temp_dir().join("nr2-live-smoke-store");
+                    let _ = std::fs::remove_dir_all(&temp_store);
 
-            let n1 = NotepadNote {
-                id: "filter-1".to_string(),
-                source_id: "tab-f1".to_string(),
-                display_title: "프로젝트 계획서".to_string(),
-                original_path: Some("C:\\docs\\plan.txt".to_string()),
-                is_saved: true,
-                is_deleted: false,
-                first_seen_at: "2026-10-03T01:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T01:00:00Z".to_string(),
-                deleted_at: None,
-                created_at: "2026-10-03T01:00:00Z".to_string(),
-                updated_at: "2026-10-03T01:00:00Z".to_string(),
-            };
-            let n2 = NotepadNote {
-                id: "filter-2".to_string(),
-                source_id: "tab-f2".to_string(),
-                display_title: "장보기 목록".to_string(),
-                original_path: None,
-                is_saved: false,
-                is_deleted: true,
-                first_seen_at: "2026-10-03T02:00:00Z".to_string(),
-                last_seen_at: "2026-10-03T02:00:00Z".to_string(),
-                deleted_at: Some("2026-10-03T02:10:00Z".to_string()),
-                created_at: "2026-10-03T02:00:00Z".to_string(),
-                updated_at: "2026-10-03T02:10:00Z".to_string(),
-            };
-            upsert_note(&pool, &n1).await.unwrap();
-            upsert_note(&pool, &n2).await.unwrap();
+                    // 실제 Notepad가 실행 중인 상태에서 공유 읽기 플래그로 스캔 및 캡처 수행
+                    let captured_count =
+                        scan_and_reconcile(&tab_dir, &win_dir, &pool, &temp_store, None).await;
+                    assert!(
+                        captured_count > 0,
+                        "실제 활성 메모장 탭이 스캔되어야 합니다"
+                    );
 
-            // 스냅샷에 검색 텍스트 저장
-            let snap = NotepadSnapshot {
-                id: "snap-f1".to_string(),
-                note_id: "filter-1".to_string(),
-                content_hash: "hash-f1".to_string(),
-                raw_snapshot_path: "snapshots/hash-f1.bin".to_string(),
-                recovered_text: Some("기밀 마일스톤 데이터".to_string()),
-                source_type: SourceType::TabState,
-                source_filename: "tab-f1.bin".to_string(),
-                source_size: 50,
-                parse_status: ParseStatus::Parsed,
-                notepad_format_version: Some(1),
-                captured_at: "2026-10-03T01:00:00Z".to_string(),
-                created_at: "2026-10-03T01:00:00Z".to_string(),
-            };
-            insert_snapshot_metadata(&pool, &snap).await.unwrap();
+                    let stats = get_storage_statistics(&pool).await.unwrap();
+                    assert!(stats.total_notes > 0);
+                    assert!(stats.total_snapshots > 0);
 
-            // 활성 노트만 조회
-            let active = list_notes(
-                &pool,
-                &NoteFilter {
-                    is_deleted: Some(false),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-            assert_eq!(active.len(), 1);
-            assert_eq!(active[0].id, "filter-1");
-
-            // 삭제된 노트만 조회
-            let deleted = list_notes(
-                &pool,
-                &NoteFilter {
-                    is_deleted: Some(true),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-            assert_eq!(deleted.len(), 1);
-            assert_eq!(deleted[0].id, "filter-2");
-
-            // 내용 검색 (스냅샷 recovered_text 검색)
-            let searched = list_notes(
-                &pool,
-                &NoteFilter {
-                    query: Some("마일스톤".to_string()),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap();
-            assert_eq!(searched.len(), 1);
-            assert_eq!(searched[0].id, "filter-1");
-        });
+                    let _ = std::fs::remove_dir_all(&temp_store);
+                });
+            }
+        }
     }
 }

@@ -360,7 +360,7 @@ pub async fn list_note_snapshots(
     let rows = sqlx::query(
         "SELECT * FROM notepad_snapshots
          WHERE note_id = ?1
-         ORDER BY captured_at DESC",
+         ORDER BY captured_at DESC, rowid DESC",
     )
     .bind(note_id)
     .fetch_all(pool)
@@ -377,7 +377,7 @@ pub async fn get_latest_snapshot_for_note(
     let row = sqlx::query(
         "SELECT * FROM notepad_snapshots
          WHERE note_id = ?1
-         ORDER BY captured_at DESC
+         ORDER BY captured_at DESC, rowid DESC
          LIMIT 1",
     )
     .bind(note_id)

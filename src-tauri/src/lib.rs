@@ -152,6 +152,7 @@ fn quit_app(app: &tauri::AppHandle) {
         std::thread::sleep(std::time::Duration::from_millis(150));
         local_services::shutdown(&handle);
         turzx::shutdown(&handle);
+        notepad_rescue::shutdown(&handle);
         resident::stop_usage_scheduler(&handle);
         handle.exit(0);
         std::thread::sleep(std::time::Duration::from_millis(4_000));
@@ -239,6 +240,7 @@ pub fn run() {
         .manage(gpu_monitor::GpuMonitorState::default())
         .manage(resident::ResidentState::default())
         .manage(turzx::TurzxState::default())
+        .manage(notepad_rescue::NotepadRescueState::default())
         .setup(|app| {
             let autostart = launched_from_autostart(std::env::args());
             app.state::<LaunchState>()
@@ -255,6 +257,7 @@ pub fn run() {
                 resident::log(app.handle(), "resident", "starting");
                 gpu_monitor::start_sampler(app.handle());
                 resident::start_usage_scheduler(app.handle());
+                notepad_rescue::start_worker(app.handle());
                 let started = local_services::autostart_services(app.handle());
                 if !started.is_empty() {
                     resident::log(

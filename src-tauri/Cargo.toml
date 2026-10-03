@@ -37,6 +37,9 @@ zeroize = "1"
 tokio = { version = "1", features = ["time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serialport = "4.10.1"
+notify = "6"
+sha2 = "0.10"
+crc32fast = "1.4"
 
 
 [profile.dev.package."*"]
