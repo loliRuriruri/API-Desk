@@ -44,6 +44,19 @@ pub async fn rescue_get_status(
     let settings = repository::get_settings(&pool).await?;
     let storage_stats = repository::get_storage_statistics(&pool).await?;
 
+    let store_root = super::storage_root(&app)?;
+    let agent_alive = super::coordination::is_agent_alive(&store_root);
+    let in_process = state.is_watching.load(Ordering::Relaxed);
+    let is_watching = agent_alive || in_process;
+
+    let provider = if agent_alive {
+        "background_agent".to_string()
+    } else if in_process {
+        "in_process_fallback".to_string()
+    } else {
+        "none".to_string()
+    };
+
     let local_state = watcher::default_notepad_local_state_dir();
     let (status, message, local_state_path) = match &local_state {
         None => (
@@ -62,7 +75,7 @@ pub async fn rescue_get_status(
                     Some("TabState 디렉터리가 아직 생성되지 않았습니다".to_string()),
                     Some(path_str),
                 )
-            } else if state.is_watching.load(Ordering::Relaxed) {
+            } else if is_watching {
                 ("ACTIVE".to_string(), None, Some(path_str))
             } else {
                 (
@@ -79,12 +92,14 @@ pub async fn rescue_get_status(
     Ok(RescueStatusDto {
         enabled: settings.enabled,
         watch_enabled: settings.watch_enabled,
-        is_watching: state.is_watching.load(Ordering::Relaxed),
+        is_watching,
         status,
         message,
         storage_stats,
         last_snapshot_at,
         local_state_path,
+        provider: Some(provider),
+        agent_running: Some(agent_alive),
     })
 }
 
@@ -497,6 +512,125 @@ pub async fn rescue_get_storage_details(app: AppHandle) -> Result<StorageDetailD
     let settings = repository::get_settings(&pool).await?;
 
     gc::get_storage_details(&pool, &store_root, &settings).await
+}
+
+/// 백그라운드 에이전트 및 보호 현황을 조회합니다.
+#[tauri::command]
+pub async fn rescue_get_agent_status(
+    app: AppHandle,
+    state: State<'_, NotepadRescueState>,
+) -> Result<super::models::AgentProtectionStatusDto, AppError> {
+    let store_root = super::storage_root(&app)?;
+    let agent_alive = super::coordination::is_agent_alive(&store_root);
+    let agent_status = super::coordination::read_heartbeat(&store_root).unwrap_or(None);
+    let startup_enabled = super::coordination::is_startup_enabled();
+    let in_process_watching = state.is_watching.load(Ordering::Relaxed);
+
+    let provider = if agent_alive {
+        "background_agent".to_string()
+    } else if in_process_watching {
+        "in_process_fallback".to_string()
+    } else {
+        "none".to_string()
+    };
+
+    Ok(super::models::AgentProtectionStatusDto {
+        agent_running: agent_alive,
+        provider,
+        agent_status,
+        startup_enabled,
+        in_process_watching,
+    })
+}
+
+/// 백그라운드 에이전트를 시작하고 내부 워커로부터 소유권을 전환(Handoff)합니다.
+#[tauri::command]
+pub async fn rescue_start_agent(
+    app: AppHandle,
+    state: State<'_, NotepadRescueState>,
+) -> Result<super::models::AgentProtectionStatusDto, AppError> {
+    let store_root = super::storage_root(&app)?;
+    if super::coordination::is_agent_alive(&store_root) {
+        return rescue_get_agent_status(app, state).await;
+    }
+
+    let agent_exe = super::coordination::default_agent_executable_path()?;
+    if !agent_exe.is_file() {
+        return Err(AppError::InvalidRequest(format!(
+            "에이전트 실행 파일을 찾을 수 없습니다: {}",
+            agent_exe.display()
+        )));
+    }
+
+    let mut cmd = crate::process::hidden_command(&agent_exe);
+    cmd.arg("--background");
+    let _ = cmd
+        .spawn()
+        .map_err(|e| AppError::Io(format!("에이전트 프로세스 시작 실패: {e}")))?;
+
+    // 하트비트가 활성화될 때까지 대기
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if super::coordination::is_agent_alive(&store_root) {
+            break;
+        }
+    }
+
+    if super::coordination::is_agent_alive(&store_root) {
+        super::stop_in_process_watcher(&app).await;
+    }
+
+    rescue_get_agent_status(app, state).await
+}
+
+/// 백그라운드 에이전트를 안전하게 정지하고 API Desk 내부 폴백 워커를 가동합니다.
+#[tauri::command]
+pub async fn rescue_stop_agent(
+    app: AppHandle,
+    state: State<'_, NotepadRescueState>,
+) -> Result<super::models::AgentProtectionStatusDto, AppError> {
+    let store_root = super::storage_root(&app)?;
+    let _ = super::coordination::request_agent_stop(&store_root);
+
+    // 에이전트 정지 대기 (최대 3초)
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if !super::coordination::is_agent_alive(&store_root) {
+            break;
+        }
+    }
+
+    // 에이전트 종료 시 API Desk 내부 폴백 워커 가동
+    super::start_worker(&app);
+
+    rescue_get_agent_status(app, state).await
+}
+
+/// 백그라운드 에이전트를 재시작합니다.
+#[tauri::command]
+pub async fn rescue_restart_agent(
+    app: AppHandle,
+    state: State<'_, NotepadRescueState>,
+) -> Result<super::models::AgentProtectionStatusDto, AppError> {
+    let _ = rescue_stop_agent(app.clone(), state.clone()).await;
+    rescue_start_agent(app, state).await
+}
+
+/// Windows 로그인 시 백그라운드 에이전트 자동 시작 설정을 변경합니다 (관리자 권한 불필요).
+#[tauri::command]
+pub async fn rescue_set_startup_protection(
+    enabled: bool,
+    _app: AppHandle,
+) -> Result<bool, AppError> {
+    let agent_exe = super::coordination::default_agent_executable_path().ok();
+    super::coordination::set_startup_enabled(enabled, agent_exe.as_deref())?;
+    Ok(super::coordination::is_startup_enabled())
+}
+
+/// Windows 로그인 시 백그라운드 에이전트 자동 시작 설정 상태를 조회합니다.
+#[tauri::command]
+pub async fn rescue_get_startup_protection() -> Result<bool, AppError> {
+    Ok(super::coordination::is_startup_enabled())
 }
 
 #[cfg(test)]

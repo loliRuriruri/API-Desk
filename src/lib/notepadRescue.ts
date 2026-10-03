@@ -216,6 +216,19 @@ export interface RescueStatusDto {
   storageStats: StorageStatistics;
   lastSnapshotAt?: string | null;
   localStatePath?: string | null;
+  provider?: string | null;
+  agentRunning?: boolean | null;
+}
+
+export interface AgentProtectionStatusDto {
+  isRunning: boolean;
+  pid?: number | null;
+  status: string;
+  lastHeartbeatAt?: string | null;
+  startupEnabled: boolean;
+  watchPath?: string | null;
+  storageRoot?: string | null;
+  uptimeSecs?: number | null;
 }
 
 export interface RescueStatusEvent {
@@ -362,6 +375,30 @@ export async function scanRawStorage(): Promise<RawBlobScanResult[]> {
 
 export async function bulkExportNotes(destinationDir?: string): Promise<string[]> {
   return invoke<string[]>("rescue_bulk_export_notes", { destinationDir });
+}
+
+export async function getAgentStatus(): Promise<AgentProtectionStatusDto> {
+  return invoke<AgentProtectionStatusDto>("rescue_get_agent_status");
+}
+
+export async function startAgent(): Promise<AgentProtectionStatusDto> {
+  return invoke<AgentProtectionStatusDto>("rescue_start_agent");
+}
+
+export async function stopAgent(): Promise<AgentProtectionStatusDto> {
+  return invoke<AgentProtectionStatusDto>("rescue_stop_agent");
+}
+
+export async function restartAgent(): Promise<AgentProtectionStatusDto> {
+  return invoke<AgentProtectionStatusDto>("rescue_restart_agent");
+}
+
+export async function setStartupProtection(enabled: boolean): Promise<boolean> {
+  return invoke<boolean>("rescue_set_startup_protection", { enabled });
+}
+
+export async function getStartupProtection(): Promise<boolean> {
+  return invoke<boolean>("rescue_get_startup_protection");
 }
 
 // ============================================================================

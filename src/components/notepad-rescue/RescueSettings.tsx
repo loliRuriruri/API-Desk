@@ -6,6 +6,7 @@ import {
   type GcReport,
   type RecoveryPackageReport,
   type DiagnosticReportDto,
+  type AgentProtectionStatusDto,
   getSettings,
   updateSettings,
   getStorageDetails,
@@ -13,8 +14,14 @@ import {
   gcExecute,
   exportRecoveryPackage,
   getDiagnosticReport,
+  getAgentStatus,
+  startAgent,
+  stopAgent,
+  restartAgent,
+  setStartupProtection,
   formatBytes,
 } from "../../lib/notepadRescue";
+import { Badge } from "../Badges";
 import { Modal } from "../Modal";
 
 interface RescueSettingsProps {
@@ -52,6 +59,11 @@ export function RescueSettings({
   const [diagReport, setDiagReport] = useState<DiagnosticReportDto | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
 
+  // Background Agent states
+  const [agentStatus, setAgentStatus] = useState<AgentProtectionStatusDto | null>(null);
+  const [agentLoading, setAgentLoading] = useState(false);
+  const [startupLoading, setStartupLoading] = useState(false);
+
   const loadData = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -66,6 +78,10 @@ export function RescueSettings({
         // 비동기 스토리지 현황 로드 (선택적)
         getStorageDetails()
           .then((d) => setStorageDetails(d))
+          .catch(() => {});
+        // 비동기 백그라운드 에이전트 상태 로드
+        getAgentStatus()
+          .then((a) => setAgentStatus(a))
           .catch(() => {});
       })
       .catch((e) => {
@@ -168,6 +184,59 @@ export function RescueSettings({
       setError(`진단 보고서 조회 실패: ${String(e)}`);
     } finally {
       setDiagLoading(false);
+    }
+  };
+
+  const handleToggleStartup = async (checked: boolean) => {
+    try {
+      setStartupLoading(true);
+      setError(null);
+      await setStartupProtection(checked);
+      const updated = await getAgentStatus();
+      setAgentStatus(updated);
+    } catch (e) {
+      setError(`시작 프로그램 설정 변경 실패: ${String(e)}`);
+    } finally {
+      setStartupLoading(false);
+    }
+  };
+
+  const handleStartAgent = async () => {
+    try {
+      setAgentLoading(true);
+      setError(null);
+      const res = await startAgent();
+      setAgentStatus(res);
+    } catch (e) {
+      setError(`에이전트 시작 실패: ${String(e)}`);
+    } finally {
+      setAgentLoading(false);
+    }
+  };
+
+  const handleStopAgent = async () => {
+    try {
+      setAgentLoading(true);
+      setError(null);
+      const res = await stopAgent();
+      setAgentStatus(res);
+    } catch (e) {
+      setError(`에이전트 중지 실패: ${String(e)}`);
+    } finally {
+      setAgentLoading(false);
+    }
+  };
+
+  const handleRestartAgent = async () => {
+    try {
+      setAgentLoading(true);
+      setError(null);
+      const res = await restartAgent();
+      setAgentStatus(res);
+    } catch (e) {
+      setError(`에이전트 재시작 실패: ${String(e)}`);
+    } finally {
+      setAgentLoading(false);
     }
   };
 
@@ -459,6 +528,103 @@ export function RescueSettings({
                   <div>유실 블롭: {diagReport.missingBlobsCount}개</div>
                   <div>고아 블롭: {diagReport.orphanBlobsCount}개</div>
                   <div>감시 상태: {diagReport.watcherEnabled ? "정상 실행 중" : "중지됨"}</div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 독립 백그라운드 보호 에이전트 (Background Protection Agent) */}
+          <div
+            style={{
+              background: "rgba(255, 255, 255, 0.02)",
+              border: "1px solid var(--border-color, #333)",
+              borderRadius: "8px",
+              padding: "12px",
+              marginBottom: "16px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <strong>독립 백그라운드 보호 에이전트</strong>
+                {agentStatus?.isRunning ? (
+                  <Badge tone="ok">실행 중 (PID: {agentStatus.pid})</Badge>
+                ) : (
+                  <Badge tone="muted">중지됨</Badge>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: "6px" }}>
+                {agentStatus?.isRunning ? (
+                  <>
+                    <button
+                      type="button"
+                      className="button button-subtle"
+                      onClick={handleRestartAgent}
+                      disabled={agentLoading}
+                      style={{ fontSize: "0.8rem", padding: "4px 8px" }}
+                    >
+                      {agentLoading ? "처리 중…" : "재시작"}
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-subtle"
+                      onClick={handleStopAgent}
+                      disabled={agentLoading}
+                      style={{ fontSize: "0.8rem", padding: "4px 8px" }}
+                    >
+                      {agentLoading ? "처리 중…" : "중지"}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="button button-subtle"
+                    onClick={handleStartAgent}
+                    disabled={agentLoading}
+                    style={{ fontSize: "0.8rem", padding: "4px 8px" }}
+                  >
+                    {agentLoading ? "처리 중…" : "에이전트 시작"}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <p style={{ margin: "0 0 10px 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+              API Desk 메인 창이 닫혀도 백그라운드에서 메모장을 24/7 지속 감시하고 백업합니다.
+              단일 작성자(Single Writer) 원칙에 따라 메인 앱과 에이전트 간 감시 권한이 충돌 없이 안전하게 전환됩니다.
+            </p>
+
+            <div className="settings-field" style={{ marginBottom: 0 }}>
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={agentStatus?.startupEnabled ?? false}
+                  onChange={(e) => handleToggleStartup(e.target.checked)}
+                  disabled={startupLoading}
+                />
+                <span>Windows 로그인 시 백그라운드 보호 에이전트 자동 시작</span>
+              </label>
+              <small className="field-hint">
+                관리자 권한 없이 현재 사용자(HKCU) 시작 프로그램으로 안전하게 등록됩니다.
+              </small>
+            </div>
+
+            {agentStatus?.isRunning && (
+              <div
+                style={{
+                  marginTop: "8px",
+                  display: "grid",
+                  gridTemplateColumns: "repeat(2, 1fr)",
+                  gap: "6px",
+                  fontSize: "0.75rem",
+                  color: "var(--text-muted)",
+                  padding: "6px 8px",
+                  background: "rgba(0, 0, 0, 0.2)",
+                  borderRadius: "4px",
+                }}
+              >
+                <div>동작 상태: {agentStatus.status}</div>
+                <div>
+                  실행 시간: {agentStatus.uptimeSecs ? `${Math.floor(agentStatus.uptimeSecs / 60)}분 ${agentStatus.uptimeSecs % 60}초` : "방금 시작됨"}
                 </div>
               </div>
             )}

@@ -66,6 +66,7 @@ pub fn ensure_storage_dirs(storage_root: &Path) -> Result<(), AppError> {
 /// 백엔드 상주 상태 관리자.
 pub struct NotepadRescueState {
     pub is_watching: Arc<AtomicBool>,
+    pub provider: Arc<Mutex<String>>,
     watcher_handle: Arc<Mutex<Option<watcher::WatcherHandle>>>,
 }
 
@@ -73,6 +74,7 @@ impl Default for NotepadRescueState {
     fn default() -> Self {
         Self {
             is_watching: Arc::new(AtomicBool::new(false)),
+            provider: Arc::new(Mutex::new("none".to_string())),
             watcher_handle: Arc::new(Mutex::new(None)),
         }
     }
@@ -130,6 +132,29 @@ pub fn start_worker(app: &tauri::AppHandle) {
         };
         let _ = ensure_storage_dirs(&store_root);
 
+        // 1. 백그라운드 에이전트 생존 여부 확인 (Single Writer 원칙)
+        if coordination::is_agent_alive(&store_root) {
+            let rescue_state = handle.state::<NotepadRescueState>();
+            rescue_state.is_watching.store(true, Ordering::Relaxed);
+            *rescue_state.provider.lock().await = "background_agent".to_string();
+            crate::resident::log(
+                &handle,
+                "notepad_rescue",
+                "background agent active; in-process watcher standby",
+            );
+            let _ = handle.emit(
+                "rescue://status",
+                &RescueStatusEvent {
+                    enabled: true,
+                    watch_enabled: true,
+                    is_watching: true,
+                    status: "ACTIVE".to_string(),
+                    message: Some("Background Agent 활성 보호 중".to_string()),
+                },
+            );
+            return;
+        }
+
         let local_state = match watcher::default_notepad_local_state_dir() {
             Some(dir) => dir,
             None => {
@@ -163,9 +188,14 @@ pub fn start_worker(app: &tauri::AppHandle) {
             Ok(w) => {
                 let rescue_state = handle.state::<NotepadRescueState>();
                 rescue_state.is_watching.store(true, Ordering::Relaxed);
+                *rescue_state.provider.lock().await = "in_process_fallback".to_string();
                 let mut guard = rescue_state.watcher_handle.lock().await;
                 *guard = Some(w);
-                crate::resident::log(&handle, "notepad_rescue", "watcher worker started");
+                crate::resident::log(
+                    &handle,
+                    "notepad_rescue",
+                    "in-process watcher fallback started",
+                );
                 let _ = handle.emit(
                     "rescue://status",
                     &RescueStatusEvent {
@@ -196,6 +226,23 @@ pub fn start_worker(app: &tauri::AppHandle) {
             }
         }
     });
+}
+
+/// 에이전트로 소유권 전환 시 내부 워커를 중지합니다.
+pub async fn stop_in_process_watcher(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<NotepadRescueState>() {
+        let mut guard = state.watcher_handle.lock().await;
+        if let Some(w) = guard.take() {
+            w.stop();
+        }
+        state.is_watching.store(true, Ordering::Relaxed);
+        *state.provider.lock().await = "background_agent".to_string();
+        crate::resident::log(
+            app,
+            "notepad_rescue",
+            "in-process watcher stopped; handoff to agent",
+        );
+    }
 }
 
 /// 백그라운드 워커를 안전하게 중지합니다.
@@ -452,11 +499,15 @@ mod tests {
             // 21. Create event
             let bin_v1 = generate_synthetic_unsaved("Watcher Version 1", false);
             std::fs::write(&file_path, &bin_v1).unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
 
-            let note1 = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888")
-                .await
-                .unwrap();
+            let mut note1 = None;
+            for _ in 0..30 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if let Ok(Some(n)) = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888").await {
+                    note1 = Some(n);
+                    break;
+                }
+            }
             assert!(note1.is_some());
             let note1 = note1.unwrap();
             assert!(!note1.is_deleted);
@@ -465,9 +516,17 @@ mod tests {
             // 22. Modify event
             let bin_v2 = generate_synthetic_unsaved("Watcher Version 2 Modified", false);
             std::fs::write(&file_path, &bin_v2).unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
 
-            let snaps = list_note_snapshots(&pool, &note1.id).await.unwrap();
+            let mut snaps = Vec::new();
+            for _ in 0..30 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if let Ok(s) = list_note_snapshots(&pool, &note1.id).await {
+                    if s.len() == 2 {
+                        snaps = s;
+                        break;
+                    }
+                }
+            }
             assert_eq!(snaps.len(), 2);
             assert_eq!(
                 snaps[0].recovered_text.as_deref(),
@@ -476,12 +535,19 @@ mod tests {
 
             // 24. Delete event
             std::fs::remove_file(&file_path).unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
 
-            let deleted_note = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888")
-                .await
-                .unwrap()
-                .unwrap();
+            let mut deleted_note = None;
+            for _ in 0..30 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if let Ok(Some(n)) = get_note_by_source_id(&pool, "11112222-3333-4444-5555-666677778888").await {
+                    if n.is_deleted {
+                        deleted_note = Some(n);
+                        break;
+                    }
+                }
+            }
+            assert!(deleted_note.is_some());
+            let deleted_note = deleted_note.unwrap();
             assert!(deleted_note.is_deleted);
             assert!(deleted_note.deleted_at.is_some());
 

@@ -48,6 +48,11 @@ export function RescueStatus({
           <div className="notepad-rescue-title-row">
             <h1 className="notepad-rescue-title">Notepad Rescue</h1>
             {getStatusBadge(status?.status)}
+            {status?.provider && (
+              <Badge tone={status.provider === "AGENT" ? "ok" : "info"}>
+                {status.provider === "AGENT" ? "백그라운드 에이전트" : "API Desk 내장"}
+              </Badge>
+            )}
           </div>
           <p className="notepad-rescue-subtitle">
             Windows 11 메모장의 미저장 탭 및 열린 세션을 비침습적으로 자동 백업하고 복구합니다.

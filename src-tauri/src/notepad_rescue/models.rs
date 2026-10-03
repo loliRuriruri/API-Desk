@@ -265,6 +265,19 @@ pub struct RescueStatusDto {
     pub storage_stats: StorageStatistics,
     pub last_snapshot_at: Option<String>,
     pub local_state_path: Option<String>,
+    pub provider: Option<String>,
+    pub agent_running: Option<bool>,
+}
+
+/// 프런트엔드용 백그라운드 에이전트 및 보호 현황 DTO.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentProtectionStatusDto {
+    pub agent_running: bool,
+    pub provider: String,
+    pub agent_status: Option<super::coordination::AgentStatus>,
+    pub startup_enabled: bool,
+    pub in_process_watching: bool,
 }
 
 /// 프런트엔드 설정 변경 DTO.
