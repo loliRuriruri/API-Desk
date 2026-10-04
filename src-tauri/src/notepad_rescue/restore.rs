@@ -171,8 +171,7 @@ pub fn is_notepad_running() -> bool {
 pub fn launch_notepad() -> Result<(), AppError> {
     #[cfg(windows)]
     {
-        crate::process::hidden_command("cmd.exe")
-            .args(["/c", "start", "", "notepad.exe"])
+        std::process::Command::new("notepad.exe")
             .spawn()
             .map_err(|e| AppError::Io(format!("메모장 실행 실패: {e}")))?;
         Ok(())

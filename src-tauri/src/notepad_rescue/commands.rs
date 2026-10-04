@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::diff::{self, DiffResultDto};
 use super::gc::{self, GcPlan, GcReport, StorageDetailDto};
@@ -456,10 +456,7 @@ pub async fn rescue_open_exported_note(_app: AppHandle, path: String) -> Result<
     }
     #[cfg(target_os = "windows")]
     {
-        crate::process::hidden_command("cmd.exe")
-            .arg("/c")
-            .arg("start")
-            .arg("")
+        std::process::Command::new("notepad.exe")
             .arg(&path)
             .spawn()
             .map_err(|e| AppError::Io(format!("파일 열기 실패: {e}")))?;
@@ -598,19 +595,82 @@ pub async fn rescue_start_agent(
         return rescue_get_agent_status(app, state).await;
     }
 
-    let agent_exe = super::coordination::default_agent_executable_path()?;
-    if !agent_exe.is_file() {
-        return Err(AppError::InvalidRequest(format!(
-            "에이전트 실행 파일을 찾을 수 없습니다: {}",
-            agent_exe.display()
-        )));
-    }
+    let agent_exe = match super::coordination::default_agent_executable_path() {
+        Ok(p) if p.is_file() => p,
+        Ok(p) => {
+            crate::resident::log(
+                &app,
+                "notepad_rescue",
+                &format!(
+                    "agent executable not found at: {}; falling back to in-process watcher",
+                    p.display()
+                ),
+            );
+            let _ = app.emit(
+                "rescue://status",
+                &super::RescueStatusEvent {
+                    enabled: true,
+                    watch_enabled: true,
+                    is_watching: false,
+                    status: "BACKGROUND_AGENT_ERROR".to_string(),
+                    message: Some("에이전트 실행 파일을 찾을 수 없습니다".to_string()),
+                },
+            );
+            super::start_worker(&app);
+            return rescue_get_agent_status(app, state).await;
+        }
+        Err(e) => {
+            crate::resident::log(
+                &app,
+                "notepad_rescue",
+                &format!("failed to determine agent path: {e}; falling back to in-process watcher"),
+            );
+            let _ = app.emit(
+                "rescue://status",
+                &super::RescueStatusEvent {
+                    enabled: true,
+                    watch_enabled: true,
+                    is_watching: false,
+                    status: "BACKGROUND_AGENT_ERROR".to_string(),
+                    message: Some(format!("에이전트 경로 확인 실패: {e}")),
+                },
+            );
+            super::start_worker(&app);
+            return rescue_get_agent_status(app, state).await;
+        }
+    };
 
-    let mut cmd = crate::process::hidden_command(&agent_exe);
+    let mut cmd = std::process::Command::new(&agent_exe);
     cmd.arg("--background");
-    let _ = cmd
-        .spawn()
-        .map_err(|e| AppError::Io(format!("에이전트 프로세스 시작 실패: {e}")))?;
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
+    }
+    crate::resident::log_child_process("notepad-rescue-agent.exe");
+
+    if let Err(e) = cmd.spawn() {
+        crate::resident::log(
+            &app,
+            "notepad_rescue",
+            &format!("failed to spawn background agent: {e}; falling back to in-process watcher"),
+        );
+        let _ = app.emit(
+            "rescue://status",
+            &super::RescueStatusEvent {
+                enabled: true,
+                watch_enabled: true,
+                is_watching: false,
+                status: "BACKGROUND_AGENT_ERROR".to_string(),
+                message: Some(format!("에이전트 프로세스 시작 실패: {e}")),
+            },
+        );
+        super::start_worker(&app);
+        return rescue_get_agent_status(app, state).await;
+    }
 
     // 에이전트 인스턴스 락 및 하트비트가 활성화될 때까지 대기
     for _ in 0..20 {
