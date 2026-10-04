@@ -31,7 +31,7 @@ export async function buildMetadataExport(): Promise<string> {
 
   const payload: MetadataExport = {
     app: "API Desk",
-    version: "0.1.0",
+    version: "0.2.0",
     exportedAt: new Date().toISOString(),
     note:
       "메타데이터 내보내기입니다. API 키 값은 암호화된 Stronghold Vault에 있으며 secret_id로 참조됩니다.",
