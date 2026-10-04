@@ -13,17 +13,13 @@
 !define MUI_FINISHPAGE_RUN_TEXT "API Desk 실행"
 
 ; ============================================================
-;  Notepad Rescue Agent 설치/제거 훅
+;  Notepad Rescue Agent / Legacy cleanup 훅
 ; ============================================================
-!define CUSTOM_INSTALL
-!macro customInstall
-  File "${__FILEDIR__}\target\release\notepad-rescue-agent.exe"
+!macro NSIS_HOOK_POSTINSTALL
   Delete "$INSTDIR\nr7_restore_cli.exe"
 !macroend
 
-!define CUSTOM_UNINSTALL
-!macro customUninstall
-  Delete "$INSTDIR\notepad-rescue-agent.exe"
+!macro NSIS_HOOK_PREUNINSTALL
   Delete "$INSTDIR\nr7_restore_cli.exe"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NotepadRescueAgent"
 !macroend
