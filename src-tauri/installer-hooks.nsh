@@ -18,10 +18,12 @@
 !define CUSTOM_INSTALL
 !macro customInstall
   File "${__FILEDIR__}\target\release\notepad-rescue-agent.exe"
+  Delete "$INSTDIR\nr7_restore_cli.exe"
 !macroend
 
 !define CUSTOM_UNINSTALL
 !macro customUninstall
   Delete "$INSTDIR\notepad-rescue-agent.exe"
+  Delete "$INSTDIR\nr7_restore_cli.exe"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NotepadRescueAgent"
 !macroend
