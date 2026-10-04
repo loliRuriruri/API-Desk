@@ -274,4 +274,67 @@ mod tests {
             "메모장 탭 복원을 위해 메모장을 먼저 닫아주세요."
         );
     }
+
+    #[test]
+    fn test_extract_tab_guids_and_build_window_state() {
+        let g1: [u8; 16] = [1; 16];
+        let g2: [u8; 16] = [2; 16];
+
+        // 1 Tab
+        let ws1 = build_window_state_with_tabs(&[g1], None);
+        assert_eq!(ws1.len(), 52);
+        let (extracted1, cfg1) = extract_tab_guids_from_window_state(&ws1);
+        assert_eq!(extracted1.len(), 1);
+        assert_eq!(extracted1[0], g1);
+        assert!(cfg1.is_some());
+
+        // 2 Tabs
+        let ws2 = build_window_state_with_tabs(&[g1, g2], None);
+        assert_eq!(ws2.len(), 68);
+        let (extracted2, cfg2) = extract_tab_guids_from_window_state(&ws2);
+        assert_eq!(extracted2.len(), 2);
+        assert_eq!(extracted2[0], g1);
+        assert_eq!(extracted2[1], g2);
+        assert!(cfg2.is_some());
+
+        // 13 Tabs
+        let mut guids13 = Vec::new();
+        for i in 0..13 {
+            guids13.push([i as u8; 16]);
+        }
+        let ws13 = build_window_state_with_tabs(&guids13, None);
+        let (extracted13, cfg13) = extract_tab_guids_from_window_state(&ws13);
+        assert_eq!(extracted13.len(), 13);
+        for i in 0..13 {
+            assert_eq!(extracted13[i], [i as u8; 16]);
+        }
+        assert!(cfg13.is_some());
+    }
+
+    #[test]
+    fn test_find_active_window_uuid_selection() {
+        let dir = test_dir("find-win");
+        let ws_dir = dir.join("WindowState");
+        fs::create_dir_all(&ws_dir).unwrap();
+
+        // Empty
+        assert_eq!(find_active_window_uuid(&ws_dir), None);
+
+        // Add 52-byte orphan
+        let orphan_uuid = generate_uuid_v4();
+        fs::write(ws_dir.join(format!("{orphan_uuid}.0.bin")), vec![0u8; 52]).unwrap();
+        fs::write(ws_dir.join(format!("{orphan_uuid}.1.bin")), vec![]).unwrap();
+
+        assert_eq!(find_active_window_uuid(&ws_dir), Some(orphan_uuid.clone()));
+
+        // Add real session (438 bytes)
+        let real_uuid = generate_uuid_v4();
+        fs::write(ws_dir.join(format!("{real_uuid}.0.bin")), vec![0u8; 438]).unwrap();
+        fs::write(ws_dir.join(format!("{real_uuid}.1.bin")), vec![0u8; 438]).unwrap();
+
+        // Must select the real session with larger size
+        assert_eq!(find_active_window_uuid(&ws_dir), Some(real_uuid));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

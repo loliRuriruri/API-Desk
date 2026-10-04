@@ -121,30 +121,167 @@ pub fn guid_str_to_bytes_le(s: &str) -> Option<[u8; 16]> {
     Some(result)
 }
 
-/// Windows 11 Notepad WindowState 52바이트 바이너리를 생성합니다.
+/// WindowState 바이너리에서 기존 탭들의 GUID 목록(16바이트 LE 배열)과 윈도우 설정(25바이트)을 추출합니다.
+pub fn extract_tab_guids_from_window_state(data: &[u8]) -> (Vec<[u8; 16]>, Option<[u8; 25]>) {
+    if data.len() < 8 || &data[0..2] != b"NP" {
+        return (Vec::new(), None);
+    }
+    let mut offset = 2;
+    // 1. Sequence counter (uLEB128)
+    if super::parser::decode_uleb128(data, &mut offset).is_err() {
+        return (Vec::new(), None);
+    }
+    // 2. Block length (uLEB128)
+    if super::parser::decode_uleb128(data, &mut offset).is_err() {
+        return (Vec::new(), None);
+    }
+    // 3. Tab count (2 bytes Big-Endian)
+    if offset + 2 > data.len() {
+        return (Vec::new(), None);
+    }
+    let tab_count = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+    offset += 2;
+
+    if offset + tab_count * 16 > data.len() {
+        return (Vec::new(), None);
+    }
+
+    let mut guids = Vec::with_capacity(tab_count);
+    for _ in 0..tab_count {
+        let mut g = [0u8; 16];
+        g.copy_from_slice(&data[offset..offset + 16]);
+        guids.push(g);
+        offset += 16;
+    }
+
+    // Skip active_idx (1 byte)
+    offset += 1;
+
+    let config = if offset + 25 <= data.len() {
+        let mut cfg = [0u8; 25];
+        cfg.copy_from_slice(&data[offset..offset + 25]);
+        Some(cfg)
+    } else {
+        None
+    };
+
+    (guids, config)
+}
+
+/// N개의 탭 GUID와 윈도우 설정을 결합하여 표준 Notepad WindowState 바이너리를 생성합니다.
 /// 포맷:
-/// - Magic: "NP\0\x2c\x00\x01" (6바이트)
-/// - Tab GUID: 16바이트 (Little-Endian)
-/// - Window Config: 26바이트 (표준 기본 윈도우 좌표 및 크기 설정)
-/// - CRC32: 4바이트 (Big-Endian, 버퍼[2..48] 범위 계산)
-pub fn build_window_state_content(tab_guid_le: &[u8; 16]) -> [u8; 52] {
-    let config_bytes: [u8; 26] = [
-        0x00, 0x1e, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x6a, 0x06, 0x00, 0x00, 0xa9, 0x03,
-        0x00, 0x00, 0x4c, 0x06, 0x00, 0x00, 0x8b, 0x03, 0x00, 0x00, 0x00,
+/// - Magic: "NP\0" (3바이트)
+/// - Block Length: uLEB128 (2 + count*16 + 26)
+/// - Tab Count: 2바이트 Big-Endian
+/// - Tab GUIDs: count * 16바이트 (Little-Endian)
+/// - Active Tab Index: 1바이트
+/// - Window Config: 25바이트
+/// - CRC32: 4바이트 Big-Endian (버퍼[2..] 범위 계산)
+pub fn build_window_state_with_tabs(
+    tab_guids_le: &[[u8; 16]],
+    window_config: Option<&[u8; 25]>,
+) -> Vec<u8> {
+    let count = tab_guids_le.len() as u16;
+    if count == 0 {
+        return Vec::new();
+    }
+    let block_len = 2 + (count as usize) * 16 + 26;
+
+    let mut buf = Vec::with_capacity(7 + (count as usize) * 16 + 30);
+    buf.extend_from_slice(b"NP\x00"); // magic NP + seq 0
+    super::parser::encode_uleb128(block_len as u64, &mut buf);
+    buf.extend_from_slice(&count.to_be_bytes());
+
+    for g in tab_guids_le {
+        buf.extend_from_slice(g);
+    }
+
+    // Active tab index: newly added tab is at index (count - 1)
+    let active_idx = (count.saturating_sub(1)) as u8;
+    buf.push(active_idx);
+
+    let default_config: [u8; 25] = [
+        0x1e, 0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x6a, 0x06, 0x00, 0x00, 0xa9, 0x03, 0x00,
+        0x00, 0x4c, 0x06, 0x00, 0x00, 0x8b, 0x03, 0x00, 0x00, 0x00,
     ];
-    let mut ws_body = Vec::with_capacity(48);
-    ws_body.extend_from_slice(b"NP\x00\x2c\x00\x01");
-    ws_body.extend_from_slice(tab_guid_le);
-    ws_body.extend_from_slice(&config_bytes);
+    let cfg = window_config.unwrap_or(&default_config);
+    buf.extend_from_slice(cfg);
 
     let mut hasher = Hasher::new();
-    hasher.update(&ws_body[2..]);
+    hasher.update(&buf[2..]);
     let crc = hasher.finalize();
+    buf.extend_from_slice(&crc.to_be_bytes());
 
+    buf
+}
+
+/// Windows 11 Notepad WindowState 52바이트 바이너리를 생성합니다 (단일 탭 호환용).
+pub fn build_window_state_content(tab_guid_le: &[u8; 16]) -> [u8; 52] {
+    let vec = build_window_state_with_tabs(&[*tab_guid_le], None);
     let mut result = [0u8; 52];
-    result[0..48].copy_from_slice(&ws_body);
-    result[48..52].copy_from_slice(&crc.to_be_bytes());
+    result.copy_from_slice(&vec[..52]);
     result
+}
+
+/// WindowState 디렉터리에서 현재 가장 유효한 활성 윈도우의 UUID를 검색합니다.
+/// 크기가 큰(실제 여러 탭이 열려있는) 세션을 우선 선택하며, 동일한 경우 최신 수정 시간을 기준으로 합니다.
+pub fn find_active_window_uuid(window_state_dir: &Path) -> Option<String> {
+    if !window_state_dir.exists() {
+        return None;
+    }
+    let entries = fs::read_dir(window_state_dir).ok()?;
+    let mut candidate_map: std::collections::HashMap<String, (u64, SystemTime)> =
+        std::collections::HashMap::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let uuid = if let Some(stripped) = fname.strip_suffix(".0.bin") {
+            stripped
+        } else if let Some(stripped) = fname.strip_suffix(".1.bin") {
+            stripped
+        } else {
+            continue;
+        };
+
+        if guid_str_to_bytes_le(uuid).is_some() {
+            let metadata = entry.metadata().ok();
+            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mtime = metadata
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .unwrap_or(UNIX_EPOCH);
+
+            let val = candidate_map
+                .entry(uuid.to_string())
+                .or_insert((0, UNIX_EPOCH));
+            if size > val.0 {
+                val.0 = size;
+            }
+            if mtime > val.1 {
+                val.1 = mtime;
+            }
+        }
+    }
+
+    if candidate_map.is_empty() {
+        return None;
+    }
+
+    let mut candidates: Vec<(String, u64, SystemTime)> = candidate_map
+        .into_iter()
+        .map(|(uuid, (size, mtime))| (uuid, size, mtime))
+        .collect();
+
+    candidates.sort_by(|a, b| {
+        b.1.cmp(&a.1) // size descending
+            .then_with(|| b.2.cmp(&a.2)) // mtime descending
+    });
+
+    candidates.into_iter().next().map(|(uuid, _, _)| uuid)
 }
 
 /// 현재 시스템에서 `notepad.exe` 프로세스가 실행 중인지 확인합니다.
@@ -493,9 +630,49 @@ pub async fn restore_native_tab(
 
     let target_tab_path = tab_state_dir.join(&tab_filename);
 
-    // 8. 윈도우 식별자 및 WindowState 바이너리 생성
-    let win_uuid_str = generate_uuid_v4();
-    let ws_content = build_window_state_content(&tab_guid_le);
+    // 8. 윈도우 식별자 및 WindowState 바이너리 결정
+    // 기존 활성 WindowState가 존재하면 새 윈도우를 만들지 않고 기존 세션에 탭을 추가하며,
+    // 없으면 단일 신규 윈도우 UUID를 생성합니다.
+    let (win_uuid_str, ws_content, orphan_windows) =
+        if let Some(existing_uuid) = find_active_window_uuid(&window_state_dir) {
+            let win_0_path = window_state_dir.join(format!("{existing_uuid}.0.bin"));
+            let win_1_path = window_state_dir.join(format!("{existing_uuid}.1.bin"));
+
+            let existing_data = fs::read(&win_0_path)
+                .or_else(|_| fs::read(&win_1_path))
+                .unwrap_or_default();
+
+            let (mut guids, config) = extract_tab_guids_from_window_state(&existing_data);
+            if !guids.contains(&tab_guid_le) {
+                guids.push(tab_guid_le);
+            }
+
+            let updated_ws = build_window_state_with_tabs(&guids, config.as_ref());
+
+            // 과거 버그로 누적되었던 52바이트/0바이트 가짜 WindowState 파일 목록 식별 (정리 대상)
+            let mut orphans = Vec::new();
+            if let Ok(entries) = fs::read_dir(&window_state_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        let fname = entry.file_name().to_string_lossy().to_string();
+                        if !fname.starts_with(&existing_uuid) {
+                            if let Ok(meta) = entry.metadata() {
+                                if meta.len() == 52 || meta.len() == 0 {
+                                    orphans.push(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            (existing_uuid, updated_ws, orphans)
+        } else {
+            let new_uuid = generate_uuid_v4();
+            let ws = build_window_state_with_tabs(&[tab_guid_le], None);
+            (new_uuid, ws, Vec::new())
+        };
 
     let target_win_0 = window_state_dir.join(format!("{win_uuid_str}.0.bin"));
     let target_win_1 = window_state_dir.join(format!("{win_uuid_str}.1.bin"));
@@ -510,10 +687,15 @@ pub async fn restore_native_tab(
         return Err(AppError::Io(format!("WindowState 0 쓰기 실패: {e}")));
     }
 
-    if let Err(e) = atomic_write(&target_win_1, &[]) {
+    if let Err(e) = atomic_write(&target_win_1, &ws_content) {
         let _ = fs::remove_file(&target_tab_path);
         let _ = fs::remove_file(&target_win_0);
         return Err(AppError::Io(format!("WindowState 1 쓰기 실패: {e}")));
+    }
+
+    // 사전 안전 백업 완료 후이므로 과거 누적 가짜 WindowState 정리
+    for orphan in orphan_windows {
+        let _ = fs::remove_file(orphan);
     }
 
     // 10. 롤백용 last_restore.json 기록
