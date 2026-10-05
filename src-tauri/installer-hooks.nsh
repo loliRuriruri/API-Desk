@@ -16,10 +16,12 @@
 ;  Notepad Rescue Agent / Legacy cleanup 훅
 ; ============================================================
 !macro NSIS_HOOK_POSTINSTALL
+  File "${__FILEDIR__}\target\release\notepad-rescue-agent.exe"
   Delete "$INSTDIR\nr7_restore_cli.exe"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  Delete "$INSTDIR\notepad-rescue-agent.exe"
   Delete "$INSTDIR\nr7_restore_cli.exe"
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "NotepadRescueAgent"
 !macroend
