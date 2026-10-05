@@ -563,4 +563,57 @@ mod tests {
         let r = ((first[0] as f64) * factor).round() as u8;
         assert_eq!(r, 100);
     }
+
+    #[test]
+    fn test_turzx_bg_cache_invalidation_and_reuse() {
+        invalidate_turzx_bg_cache();
+        assert!(bg_cache_lock().lock().unwrap().is_none());
+
+        let fake_path = PathBuf::from("fake_bg.png");
+        let cached = Arc::new(TurzxCachedBg {
+            path: fake_path.clone(),
+            mtime: None,
+            width: 320,
+            height: 480,
+            overlay_opacity_scaled: 450,
+            blur_px: 8,
+            bgra: vec![0u8; 320 * 480 * 4],
+            rgb: vec![0u8; 320 * 480 * 3],
+        });
+
+        *bg_cache_lock().lock().unwrap() = Some(Arc::clone(&cached));
+
+        let retrieved = bg_cache_lock().lock().unwrap().as_ref().unwrap().clone();
+        assert_eq!(retrieved.width, 320);
+        assert_eq!(retrieved.height, 480);
+        assert_eq!(retrieved.path, fake_path);
+
+        invalidate_turzx_bg_cache();
+        assert!(bg_cache_lock().lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_turzx_refresh_performance_benchmark() {
+        use crate::turzx::gdi::Canvas;
+        let mut canvas = Canvas::new(320, 480);
+        let bgra = vec![0x33u8; 320 * 480 * 4];
+
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            canvas.set_background_bgra(&bgra);
+        }
+        let elapsed = start.elapsed();
+        let per_frame_us = elapsed.as_micros() as f64 / 1000.0;
+        assert!(
+            per_frame_us < 2000.0,
+            "Per frame blit too slow: {per_frame_us:.2} us"
+        );
+    }
+
+    #[test]
+    fn test_fallback_safety_on_corrupt_data() {
+        let corrupt_data = b"not an actual image file";
+        let res = image::load_from_memory(corrupt_data);
+        assert!(res.is_err(), "Corrupt data must fail gracefully");
+    }
 }

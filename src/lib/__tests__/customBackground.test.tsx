@@ -1,4 +1,6 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { render } from "@testing-library/react";
 import {
   setCustomBackground,
   loadCustomBackground,
@@ -11,6 +13,7 @@ import {
   saveSetting,
 } from "../settings";
 import * as repo from "../db/repo";
+import { CustomBackgroundLayer } from "../../components/CustomBackgroundLayer";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -31,6 +34,11 @@ vi.mock("@tauri-apps/api/core", () => ({
     }
     throw new Error(`Unhandled invoke cmd: ${cmd}`);
   }),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+  emit: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe("customBackground IPC client", () => {
@@ -131,5 +139,60 @@ describe("customBackground settings persistence and fallback", () => {
     };
     await saveSetting("customBackground", customBg);
     expect(setSettingSpy).toHaveBeenCalledWith("customBackground", JSON.stringify(customBg));
+  });
+});
+
+describe("CustomBackgroundLayer surface rendering", () => {
+  const baseBg = {
+    enabled: true,
+    path: "C:\\bg.png",
+    overlayOpacity: 0.45,
+    blurPx: 8,
+    applyToMain: true,
+    applyToMini: true,
+    applyToMonitor: true,
+  };
+  const testDataUrl = "data:image/png;base64,mock";
+
+  it("renders on main when applyToMain is true", () => {
+    const { container } = render(
+      <CustomBackgroundLayer surface="main" settings={baseBg} dataUrl={testDataUrl} />
+    );
+    expect(container.querySelector(".app-custom-bg")).not.toBeNull();
+  });
+
+  it("does not render on main when applyToMain is false", () => {
+    const { container } = render(
+      <CustomBackgroundLayer surface="main" settings={{ ...baseBg, applyToMain: false }} dataUrl={testDataUrl} />
+    );
+    expect(container.querySelector(".app-custom-bg")).toBeNull();
+  });
+
+  it("renders on mini when applyToMini is true", () => {
+    const { container } = render(
+      <CustomBackgroundLayer surface="mini" settings={baseBg} dataUrl={testDataUrl} />
+    );
+    expect(container.querySelector(".app-custom-bg")).not.toBeNull();
+  });
+
+  it("does not render on mini when applyToMini is false", () => {
+    const { container } = render(
+      <CustomBackgroundLayer surface="mini" settings={{ ...baseBg, applyToMini: false }} dataUrl={testDataUrl} />
+    );
+    expect(container.querySelector(".app-custom-bg")).toBeNull();
+  });
+
+  it("does not render when enabled is false even if surface flags are true", () => {
+    const { container } = render(
+      <CustomBackgroundLayer surface="main" settings={{ ...baseBg, enabled: false }} dataUrl={testDataUrl} />
+    );
+    expect(container.querySelector(".app-custom-bg")).toBeNull();
+  });
+
+  it("gracefully falls back and does not render when dataUrl is null", () => {
+    const { container } = render(
+      <CustomBackgroundLayer surface="main" settings={baseBg} dataUrl={null} />
+    );
+    expect(container.querySelector(".app-custom-bg")).toBeNull();
   });
 });
