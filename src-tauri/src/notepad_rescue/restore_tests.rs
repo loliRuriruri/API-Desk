@@ -4,9 +4,12 @@ mod tests {
     use std::path::PathBuf;
 
     use crc32fast::Hasher;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
 
-    use crate::notepad_rescue::models::{NotepadSnapshot, ParseStatus, SourceType};
+    use crate::notepad_rescue::models::{NotepadNote, NotepadSnapshot, ParseStatus, SourceType};
     use crate::notepad_rescue::parser::generate_synthetic_unsaved;
+    use crate::notepad_rescue::repository;
     use crate::notepad_rescue::restore::*;
     use crate::notepad_rescue::snapshot::{compute_sha256, store_blob};
 
@@ -336,5 +339,132 @@ mod tests {
         assert_eq!(find_active_window_uuid(&ws_dir), Some(real_uuid));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    async fn create_test_db() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        repository::ensure_schema(&pool).await.unwrap();
+        pool
+    }
+
+    #[test]
+    fn test_repeated_native_restore_does_not_accumulate_window_state() {
+        tauri::async_runtime::block_on(async {
+            let pool = create_test_db().await;
+            let dir = test_dir("multi-restore");
+            let storage_root = dir.join("storage");
+            let notepad_local_state = dir.join("LocalState");
+            let ws_dir = notepad_local_state.join("WindowState");
+            let tab_dir = notepad_local_state.join("TabState");
+            fs::create_dir_all(&ws_dir).unwrap();
+            fs::create_dir_all(&tab_dir).unwrap();
+
+            // 1. Initial Notepad state: 1 window with 1 tab
+            let session_uuid = generate_uuid_v4();
+            let initial_tab_guid: [u8; 16] = [0xAA; 16];
+            let initial_ws = build_window_state_with_tabs(&[initial_tab_guid], None);
+            fs::write(ws_dir.join(format!("{session_uuid}.0.bin")), &initial_ws).unwrap();
+            fs::write(ws_dir.join(format!("{session_uuid}.1.bin")), &initial_ws).unwrap();
+
+            // 2. Prepare 3 distinct notes and snapshots in storage
+            for i in 1..=3 {
+                let note_id = format!("note-{i}");
+                let snap_id = format!("snap-{i}");
+                let text = format!("Content for note {i}\nRestored tab test.");
+                let valid_bin = generate_synthetic_unsaved(&text, false);
+                let hash = compute_sha256(&valid_bin);
+                let rel_blob = store_blob(&storage_root, &hash, &valid_bin).unwrap();
+
+                let note = NotepadNote {
+                    id: note_id.clone(),
+                    source_id: format!("src-{i}"),
+                    display_title: format!("Test Note {i}"),
+                    original_path: None,
+                    is_saved: false,
+                    is_deleted: true,
+                    first_seen_at: "2026-10-04T00:00:00Z".to_string(),
+                    last_seen_at: "2026-10-04T01:00:00Z".to_string(),
+                    deleted_at: Some("2026-10-04T01:05:00Z".to_string()),
+                    created_at: "2026-10-04T00:00:00Z".to_string(),
+                    updated_at: "2026-10-04T01:00:00Z".to_string(),
+                };
+                repository::upsert_note(&pool, &note).await.unwrap();
+
+                let snap = NotepadSnapshot {
+                    id: snap_id.clone(),
+                    note_id: note_id.clone(),
+                    content_hash: hash,
+                    raw_snapshot_path: rel_blob,
+                    recovered_text: Some(text),
+                    source_type: SourceType::TabState,
+                    source_filename: format!("tab-{i}.bin"),
+                    source_size: valid_bin.len() as i64,
+                    parse_status: ParseStatus::Parsed,
+                    notepad_format_version: Some(1),
+                    captured_at: "2026-10-04T01:00:00Z".to_string(),
+                    created_at: "2026-10-04T01:00:00Z".to_string(),
+                };
+                repository::insert_snapshot_metadata(&pool, &snap)
+                    .await
+                    .unwrap();
+
+                // Perform restore (with launch_notepad_after = false)
+                let report = restore_native_tab_internal(
+                    &pool,
+                    &storage_root,
+                    &notepad_local_state,
+                    &note_id,
+                    Some(&snap_id),
+                    false,
+                )
+                .await
+                .expect("restore must succeed");
+
+                assert!(report.success);
+                assert_eq!(report.note_id, note_id);
+
+                // Check WindowState directory entries
+                let ws_files: Vec<_> = fs::read_dir(&ws_dir)
+                    .unwrap()
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect();
+
+                // Exactly 2 files must exist: {session_uuid}.0.bin and {session_uuid}.1.bin
+                assert_eq!(
+                    ws_files.len(),
+                    2,
+                    "WindowState files must NOT accumulate! Found: {:?}",
+                    ws_files
+                );
+                assert!(ws_files.contains(&format!("{session_uuid}.0.bin")));
+                assert!(ws_files.contains(&format!("{session_uuid}.1.bin")));
+
+                // Verify the tab count in WindowState increased to 1 + i
+                let content_0 = fs::read(ws_dir.join(format!("{session_uuid}.0.bin"))).unwrap();
+                let content_1 = fs::read(ws_dir.join(format!("{session_uuid}.1.bin"))).unwrap();
+                assert_eq!(content_0, content_1);
+
+                let (guids, _) = extract_tab_guids_from_window_state(&content_0);
+                assert_eq!(
+                    guids.len(),
+                    1 + i,
+                    "Tab count in WindowState must be {}",
+                    1 + i
+                );
+            }
+
+            // Check TabState directory has 3 restored tabs
+            let tab_files: Vec<_> = fs::read_dir(&tab_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .collect();
+            assert_eq!(tab_files.len(), 3);
+
+            let _ = fs::remove_dir_all(&dir);
+        });
     }
 }

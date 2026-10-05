@@ -531,8 +531,33 @@ pub async fn restore_native_tab(
     note_id: &str,
     snapshot_id: Option<&str>,
 ) -> Result<RestoreNativeReport, AppError> {
+    let notepad_local_state = default_notepad_local_state_dir().ok_or_else(|| {
+        AppError::InvalidRequest(
+            "Windows Notepad LocalState 경로를 확인할 수 없습니다.".to_string(),
+        )
+    })?;
+    restore_native_tab_internal(
+        pool,
+        storage_root,
+        &notepad_local_state,
+        note_id,
+        snapshot_id,
+        true,
+    )
+    .await
+}
+
+/// 네이티브 탭 복원 내부 로직 (단위 테스트에서 모의 디렉터리 및 프로세스 실행 제어 지원).
+pub async fn restore_native_tab_internal(
+    pool: &SqlitePool,
+    storage_root: &Path,
+    notepad_local_state: &Path,
+    note_id: &str,
+    snapshot_id: Option<&str>,
+    launch_notepad_after: bool,
+) -> Result<RestoreNativeReport, AppError> {
     // 1. Notepad 실행 상태 검증 (실행 중이면 거부)
-    if is_notepad_running() {
+    if launch_notepad_after && is_notepad_running() {
         return Err(AppError::InvalidRequest(NOTEPAD_RUNNING_ERROR.to_string()));
     }
 
@@ -578,13 +603,7 @@ pub async fn restore_native_tab(
     // 4. 스냅샷 무결성 및 RAW 데이터 검증
     let raw_data = validate_snapshot_for_restore(storage_root, &snapshot)?;
 
-    // 5. Notepad LocalState 디렉터리 확인
-    let notepad_local_state = default_notepad_local_state_dir().ok_or_else(|| {
-        AppError::InvalidRequest(
-            "Windows Notepad LocalState 경로를 확인할 수 없습니다.".to_string(),
-        )
-    })?;
-
+    // 5. Notepad LocalState 하위 디렉터리 확인
     let tab_state_dir = notepad_local_state.join("TabState");
     let window_state_dir = notepad_local_state.join("WindowState");
 
@@ -726,8 +745,11 @@ pub async fn restore_native_tab(
     let _ = atomic_write(&backup_meta_file, meta_json.as_bytes());
 
     // 11. Notepad 정상 실행
-    let launch_res = launch_notepad();
-    let notepad_launched = launch_res.is_ok();
+    let notepad_launched = if launch_notepad_after {
+        launch_notepad().is_ok()
+    } else {
+        false
+    };
 
     Ok(RestoreNativeReport {
         success: true,
