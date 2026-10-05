@@ -12,6 +12,7 @@ mod tests {
     use crate::notepad_rescue::repository;
     use crate::notepad_rescue::restore::*;
     use crate::notepad_rescue::snapshot::{compute_sha256, store_blob};
+    use crate::notepad_rescue::watcher::default_notepad_local_state_dir;
 
     fn test_dir(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("nr7-test-{name}-{}", generate_uuid_v4()));
@@ -465,6 +466,101 @@ mod tests {
             assert_eq!(tab_files.len(), 3);
 
             let _ = fs::remove_dir_all(&dir);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn test_live_restore_acceptance() {
+        tauri::async_runtime::block_on(async {
+            let appdata = std::env::var("APPDATA").unwrap();
+            let localappdata = std::env::var("LOCALAPPDATA").unwrap();
+            let db_file = PathBuf::from(&appdata)
+                .join("com.apidesk.desktop")
+                .join("apidb.db");
+            let storage_root = PathBuf::from(&localappdata)
+                .join("com.apidesk.desktop")
+                .join("notepad_rescue");
+            let notepad_local_state = default_notepad_local_state_dir().unwrap();
+
+            let pool = SqlitePoolOptions::new()
+                .connect(&format!("sqlite://{}", db_file.to_str().unwrap()))
+                .await
+                .unwrap();
+
+            let report = restore_native_tab_internal(
+                &pool,
+                &storage_root,
+                &notepad_local_state,
+                "note-18daf97405610894-6d",
+                None,
+                false,
+            )
+            .await
+            .expect("Live restore should succeed");
+
+            println!("LIVE RESTORE REPORT: {:?}", report);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn test_live_repeated_restore_5_times() {
+        tauri::async_runtime::block_on(async {
+            let appdata = std::env::var("APPDATA").unwrap();
+            let localappdata = std::env::var("LOCALAPPDATA").unwrap();
+            let db_file = PathBuf::from(&appdata)
+                .join("com.apidesk.desktop")
+                .join("apidb.db");
+            let storage_root = PathBuf::from(&localappdata)
+                .join("com.apidesk.desktop")
+                .join("notepad_rescue");
+            let notepad_local_state = default_notepad_local_state_dir().unwrap();
+            let ws_dir = notepad_local_state.join("WindowState");
+
+            let pool = SqlitePoolOptions::new()
+                .connect(&format!("sqlite://{}", db_file.to_str().unwrap()))
+                .await
+                .unwrap();
+
+            let test_notes = [
+                "note-18daf96b9665f7a4-1",
+                "note-18daf96b96a6cb58-4",
+                "note-18daf96b9706f6e0-8",
+                "note-18daf97405610894-6d",
+                "note-18daf96b97757278-e",
+            ];
+
+            for (idx, note_id) in test_notes.iter().enumerate() {
+                let report = restore_native_tab_internal(
+                    &pool,
+                    &storage_root,
+                    &notepad_local_state,
+                    note_id,
+                    None,
+                    false,
+                )
+                .await
+                .expect("restore must succeed");
+
+                println!(
+                    "RESTORE {idx}: note={note_id}, tab_uuid={}",
+                    report.restored_tab_uuid
+                );
+
+                let ws_files: Vec<_> = fs::read_dir(&ws_dir)
+                    .unwrap()
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect();
+
+                assert_eq!(
+                    ws_files.len(),
+                    2,
+                    "WindowState files must remain strictly 2! Found: {:?}",
+                    ws_files
+                );
+            }
         });
     }
 }
