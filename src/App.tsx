@@ -19,6 +19,7 @@ import {
   listUsageSnapshots,
 } from "./lib/db/repo";
 import { errorMessage } from "./lib/errors";
+import { loadCustomBackground } from "./lib/customBackground";
 import {
   applyTheme,
   DEFAULT_SETTINGS,
@@ -80,6 +81,7 @@ function MainApp() {
   const [vault, setVault] = useState<VaultStatus | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [bgDataUrl, setBgDataUrl] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>({ page: "dashboard", nonce: 0 });
   const [searchOpen, setSearchOpen] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -157,6 +159,33 @@ function MainApp() {
   useEffect(() => {
     applyTheme(settings.theme);
   }, [settings.theme]);
+
+  useEffect(() => {
+    let active = true;
+    const bg = settings.customBackground;
+    if (bg?.enabled && bg.path) {
+      loadCustomBackground(bg.path)
+        .then((url) => {
+          if (active) setBgDataUrl(url);
+        })
+        .catch(() => {
+          if (active) setBgDataUrl(null);
+        });
+    } else {
+      setBgDataUrl(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [settings.customBackground?.enabled, settings.customBackground?.path]);
+
+  useEffect(() => {
+    if (settings.customBackground?.enabled && bgDataUrl) {
+      document.documentElement.dataset.customBg = "true";
+    } else {
+      delete document.documentElement.dataset.customBg;
+    }
+  }, [settings.customBackground?.enabled, bgDataUrl]);
 
   useEffect(() => {
     void setTrayResident(settings.trayResident);
@@ -393,33 +422,62 @@ function MainApp() {
     }
   };
 
+  const customBgElement =
+    settings.customBackground?.enabled && bgDataUrl ? (
+      <div className="app-custom-bg" aria-hidden="true">
+        <div
+          className="app-custom-bg-image"
+          style={{
+            backgroundImage: `url(${bgDataUrl})`,
+            filter: `blur(${settings.customBackground.blurPx}px)`,
+          }}
+        />
+        <div
+          className="app-custom-bg-overlay"
+          style={{ opacity: settings.customBackground.overlayOpacity }}
+        />
+      </div>
+    ) : null;
+
   if (bootError) {
     return (
-      <div className="gate">
-        <div className="gate-card">
-          <h1>API Desk를 시작할 수 없습니다</h1>
-          <p className="gate-error">{bootError}</p>
+      <>
+        {customBgElement}
+        <div className="gate">
+          <div className="gate-card">
+            <h1>API Desk를 시작할 수 없습니다</h1>
+            <p className="gate-error">{bootError}</p>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
   if (!vault) {
-    return <div className="gate splash">API Desk 준비 중…</div>;
+    return (
+      <>
+        {customBgElement}
+        <div className="gate splash">API Desk 준비 중…</div>
+      </>
+    );
   }
 
   if (!entered || vault.state !== "unlocked") {
     return (
-      <StartupGate
-        status={vault}
-        onEnter={() => setEntered(true)}
-        onUnlocked={() => void refreshVault()}
-      />
+      <>
+        {customBgElement}
+        <StartupGate
+          status={vault}
+          onEnter={() => setEntered(true)}
+          onUnlocked={() => void refreshVault()}
+        />
+      </>
     );
   }
 
   return (
     <ToastProvider>
+      {customBgElement}
       <div className="app">
         <Sidebar
           page={route.page}

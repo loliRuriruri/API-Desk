@@ -16,12 +16,18 @@ import { usageAdapterFor } from "../lib/providers/usage";
 import { monitorProbe } from "../lib/system";
 import { buildMetadataExport } from "../lib/export";
 import {
+  DEFAULT_CUSTOM_BACKGROUND,
   loadImportNotes,
   saveImportNotes,
   saveSetting,
   type AppSettings,
   type ThemeSetting,
 } from "../lib/settings";
+import {
+  deleteCustomBackground,
+  loadCustomBackground,
+  setCustomBackground,
+} from "../lib/customBackground";
 import {
   exportCredentials,
   getAppPaths,
@@ -75,6 +81,27 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [enrollPassword, setEnrollPassword] = useState("");
   const [enrollBusy, setEnrollBusy] = useState(false);
+  const [bgDataUrl, setBgDataUrl] = useState<string | null>(null);
+  const [bgBusy, setBgBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const bg = settings.customBackground ?? DEFAULT_CUSTOM_BACKGROUND;
+    if (bg.path || bg.enabled) {
+      loadCustomBackground(bg.path)
+        .then((url) => {
+          if (active) setBgDataUrl(url);
+        })
+        .catch(() => {
+          if (active) setBgDataUrl(null);
+        });
+    } else {
+      setBgDataUrl(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [settings.customBackground?.path, settings.customBackground?.enabled]);
 
   useEffect(() => {
     void getAutostart().then(setAutostartEnabled);
@@ -274,11 +301,75 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
     }
   };
 
+  const handleSelectBackground = async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: "이미지 파일",
+            extensions: ["png", "jpg", "jpeg", "webp"],
+          },
+        ],
+      });
+      if (!selected || typeof selected !== "string") return;
+      setBgBusy(true);
+      const res = await setCustomBackground(selected);
+      setBgDataUrl(res.dataUrl);
+      const currentBg = settings.customBackground ?? DEFAULT_CUSTOM_BACKGROUND;
+      await update("customBackground", {
+        ...currentBg,
+        path: res.path,
+        enabled: true,
+      });
+      notify("배경 이미지를 적용했습니다.", "info");
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setBgBusy(false);
+    }
+  };
+
+  const handleResetBackground = async () => {
+    try {
+      const currentBg = settings.customBackground ?? DEFAULT_CUSTOM_BACKGROUND;
+      await update("customBackground", {
+        ...currentBg,
+        overlayOpacity: DEFAULT_CUSTOM_BACKGROUND.overlayOpacity,
+        blurPx: DEFAULT_CUSTOM_BACKGROUND.blurPx,
+      });
+      notify("배경 오버레이 및 블러를 기본값으로 초기화했습니다.", "info");
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    }
+  };
+
+  const handleRemoveBackground = async () => {
+    try {
+      setBgBusy(true);
+      await deleteCustomBackground();
+      setBgDataUrl(null);
+      await update("customBackground", {
+        ...DEFAULT_CUSTOM_BACKGROUND,
+        path: "",
+        enabled: false,
+      });
+      notify("배경 이미지를 제거했습니다.", "info");
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setBgBusy(false);
+    }
+  };
+
+  const customBg = settings.customBackground ?? DEFAULT_CUSTOM_BACKGROUND;
+
   return (
     <div className="page settings-page">
       <section className="panel">
         <header className="panel-header">
-          <h3>화면</h3>
+          <h3>외형 및 배경</h3>
         </header>
         <label className="field field-inline">
           <span>테마</span>
@@ -292,6 +383,128 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
             <option value="frutiger-aero">프루티거 에어로 아쿠아 글로스</option>
           </select>
         </label>
+
+        <hr className="settings-divider" />
+
+        <div className="bg-settings-group">
+          <label className="field field-check">
+            <input
+              type="checkbox"
+              checked={customBg.enabled}
+              disabled={!customBg.path && !bgDataUrl}
+              onChange={(event) =>
+                void update("customBackground", {
+                  ...customBg,
+                  enabled: event.target.checked,
+                })
+              }
+            />
+            <span>배경 이미지 사용</span>
+          </label>
+
+          <div className="bg-preview-container">
+            {bgDataUrl ? (
+              <div className="bg-preview-thumbnail">
+                <div
+                  className="bg-preview-image"
+                  style={{
+                    backgroundImage: `url(${bgDataUrl})`,
+                    filter: `blur(${Math.min(customBg.blurPx, 10)}px)`,
+                  }}
+                />
+                <div
+                  className="bg-preview-overlay"
+                  style={{ opacity: customBg.overlayOpacity }}
+                />
+              </div>
+            ) : null}
+            <div className="bg-preview-info">
+              <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={bgBusy}
+                  onClick={() => void handleSelectBackground()}
+                >
+                  {bgBusy ? "처리 중…" : bgDataUrl ? "다른 이미지로 변경…" : "이미지 선택 (PNG/JPG)…"}
+                </button>
+                {bgDataUrl ? (
+                  <button
+                    type="button"
+                    className="button button-danger"
+                    disabled={bgBusy}
+                    onClick={() => void handleRemoveBackground()}
+                  >
+                    이미지 제거
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="button"
+                  disabled={bgBusy}
+                  onClick={() => void handleResetBackground()}
+                >
+                  기본값으로 초기화
+                </button>
+              </div>
+              {customBg.path ? (
+                <span className="bg-preview-path mono" title={customBg.path}>
+                  저장 경로: {customBg.path}
+                </span>
+              ) : (
+                <span className="form-hint" style={{ margin: 0 }}>
+                  선택한 이미지는 앱 전용 폴더에 안전하게 복사되어 앱 전체 배경으로 적용됩니다.
+                </span>
+              )}
+            </div>
+          </div>
+
+          <label className="field field-inline">
+            <span>오버레이 어둡기 (가독성)</span>
+            <div className="bg-slider-row">
+              <input
+                type="range"
+                min={0}
+                max={0.9}
+                step={0.05}
+                value={customBg.overlayOpacity}
+                onChange={(event) =>
+                  void update("customBackground", {
+                    ...customBg,
+                    overlayOpacity: Number(event.target.value),
+                  })
+                }
+              />
+              <span className="bg-slider-value">
+                {Math.round(customBg.overlayOpacity * 100)}%
+              </span>
+            </div>
+          </label>
+
+          <label className="field field-inline">
+            <span>블러 흐림 강도</span>
+            <div className="bg-slider-row">
+              <input
+                type="range"
+                min={0}
+                max={30}
+                step={1}
+                value={customBg.blurPx}
+                onChange={(event) =>
+                  void update("customBackground", {
+                    ...customBg,
+                    blurPx: Number(event.target.value),
+                  })
+                }
+              />
+              <span className="bg-slider-value">{customBg.blurPx}px</span>
+            </div>
+          </label>
+
+          <p className="form-hint">
+            슬라이드 없이 고정 단일 이미지만 지원하며, 어두운 오버레이와 블러를 조절하여 카드 및 텍스트 가독성을 유지할 수 있습니다.
+          </p>
+        </div>
       </section>
 
       <section className="panel">

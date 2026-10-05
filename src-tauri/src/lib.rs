@@ -1,3 +1,4 @@
+mod custom_background;
 mod envfile;
 mod error;
 mod export;
@@ -427,6 +428,9 @@ pub fn run() {
             notepad_rescue::rescue_restore_native_tab,
             notepad_rescue::rescue_rollback_last_restore,
             notepad_rescue::rescue_can_rollback,
+            custom_background::custom_background_set,
+            custom_background::custom_background_load,
+            custom_background::custom_background_delete,
         ])
         .build(tauri::generate_context!())
         .expect("error while building API Desk")

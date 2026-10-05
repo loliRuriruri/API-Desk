@@ -2,6 +2,20 @@ import { getSetting, setSetting } from "./db/repo";
 
 export type ThemeSetting = "system" | "frutiger-aero" | "dark" | "light";
 
+export interface CustomBackgroundSettings {
+  enabled: boolean;
+  path: string;
+  overlayOpacity: number;
+  blurPx: number;
+}
+
+export const DEFAULT_CUSTOM_BACKGROUND: CustomBackgroundSettings = {
+  enabled: false,
+  path: "",
+  overlayOpacity: 0.45,
+  blurPx: 8,
+};
+
 export interface AppSettings {
   theme: ThemeSetting;
   clipboardClearSecs: number;
@@ -12,6 +26,7 @@ export interface AppSettings {
   alertThresholdPercent: number;
   openMiniOnStart: boolean;
   autoLockMinutes: number;
+  customBackground: CustomBackgroundSettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -24,6 +39,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   alertThresholdPercent: 20,
   openMiniOnStart: false,
   autoLockMinutes: 0,
+  customBackground: DEFAULT_CUSTOM_BACKGROUND,
 };
 
 const KEYS: Record<keyof AppSettings, string> = {
@@ -36,6 +52,7 @@ const KEYS: Record<keyof AppSettings, string> = {
   alertThresholdPercent: "alertThresholdPercent",
   openMiniOnStart: "openMiniOnStart",
   autoLockMinutes: "autoLockMinutes",
+  customBackground: "customBackground",
 };
 
 export async function loadSettings(): Promise<AppSettings> {
@@ -75,6 +92,28 @@ export async function loadSettings(): Promise<AppSettings> {
         } else if (field === "autoLockMinutes") {
           if (typeof parsed === "number" && Number.isFinite(parsed)) {
             settings.autoLockMinutes = Math.max(0, Math.min(240, parsed));
+          }
+        } else if (field === "customBackground") {
+          if (typeof parsed === "object" && parsed !== null) {
+            const p = parsed as Partial<CustomBackgroundSettings>;
+            settings.customBackground = {
+              enabled:
+                typeof p.enabled === "boolean"
+                  ? p.enabled
+                  : DEFAULT_CUSTOM_BACKGROUND.enabled,
+              path:
+                typeof p.path === "string"
+                  ? p.path
+                  : DEFAULT_CUSTOM_BACKGROUND.path,
+              overlayOpacity:
+                typeof p.overlayOpacity === "number" && Number.isFinite(p.overlayOpacity)
+                  ? Math.min(0.95, Math.max(0, p.overlayOpacity))
+                  : DEFAULT_CUSTOM_BACKGROUND.overlayOpacity,
+              blurPx:
+                typeof p.blurPx === "number" && Number.isFinite(p.blurPx)
+                  ? Math.min(50, Math.max(0, Math.round(p.blurPx)))
+                  : DEFAULT_CUSTOM_BACKGROUND.blurPx,
+            };
           }
         }
       } catch {
