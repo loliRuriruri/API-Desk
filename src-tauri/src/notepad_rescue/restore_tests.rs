@@ -563,4 +563,58 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    #[ignore]
+    fn test_live_native_restore_and_rollback() {
+        tauri::async_runtime::block_on(async {
+            let appdata = std::env::var("APPDATA").unwrap();
+            let localappdata = std::env::var("LOCALAPPDATA").unwrap();
+            let db_file = PathBuf::from(&appdata)
+                .join("com.apidesk.desktop")
+                .join("apidb.db");
+            let storage_root = PathBuf::from(&localappdata)
+                .join("com.apidesk.desktop")
+                .join("notepad_rescue");
+            let notepad_local_state = default_notepad_local_state_dir().unwrap();
+
+            let pool = SqlitePoolOptions::new()
+                .connect(&format!("sqlite://{}", db_file.to_str().unwrap()))
+                .await
+                .unwrap();
+
+            // 1. Perform restore
+            let report = restore_native_tab_internal(
+                &pool,
+                &storage_root,
+                &notepad_local_state,
+                "note-18daf97405610894-6d",
+                None,
+                false,
+            )
+            .await
+            .expect("Native restore must succeed");
+
+            println!("RESTORE SUCCESS: tab_path={}", report.restored_tab_path);
+            let restored_file = PathBuf::from(&report.restored_tab_path);
+            assert!(restored_file.exists(), "Restored tab file must exist");
+            assert!(can_rollback(&storage_root), "Rollback metadata must exist");
+
+            // 2. Perform rollback
+            let rb_report =
+                rollback_last_restore_internal(&storage_root, &notepad_local_state, false)
+                    .expect("Rollback must succeed");
+            println!("ROLLBACK SUCCESS: {:?}", rb_report);
+
+            assert!(rb_report.success);
+            assert!(
+                !restored_file.exists(),
+                "Restored tab file must be removed on rollback"
+            );
+            assert!(
+                !can_rollback(&storage_root),
+                "Rollback flag must be cleared"
+            );
+        });
+    }
 }
