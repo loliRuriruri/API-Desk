@@ -26,7 +26,8 @@ import {
   type AntigravityAccount,
 } from "./lib/system";
 import { runAntigravitySwitch, runAntigravityConfirm } from "./lib/monitorStore";
-import { onUsageRefresh, onVaultChanged, openMainPage, showMainWindow, notifySettingsChanged } from "./lib/desktop";
+import { onUsageRefresh, onVaultChanged, openMainPage, showMainWindow, notifySettingsChanged, onSettingsChanged } from "./lib/desktop";
+import { CustomBackgroundLayer } from "./components/CustomBackgroundLayer";
 import { usageAdapterFor, usageExtraSecretFor } from "./lib/providers/usage";
 import { credentialRemainingPercent } from "./lib/alerts";
 import { usageGauges } from "./lib/monitorGauges";
@@ -99,18 +100,23 @@ export function MiniApp() {
 
   useEffect(() => {
     let active = true;
-    loadSettings()
-      .then((settings) => {
-        if (!active) return;
-        applyTheme(settings.theme);
-        setAlertsOn(settings.alertsEnabled);
-        setAlertThreshold(settings.alertThresholdPercent);
-      })
-      .catch(() => {
-        // theme is best-effort while the vault is locked
-      });
+    const load = () => {
+      loadSettings()
+        .then((settings) => {
+          if (!active) return;
+          applyTheme(settings.theme);
+          setAlertsOn(settings.alertsEnabled);
+          setAlertThreshold(settings.alertThresholdPercent);
+        })
+        .catch(() => {
+          // theme is best-effort while the vault is locked
+        });
+    };
+    load();
+    const unlisten = onSettingsChanged(() => load());
     return () => {
       active = false;
+      unlisten();
     };
   }, []);
 
@@ -298,7 +304,9 @@ export function MiniApp() {
   const vaultUnlocked = !locked;
 
   return (
-    <div className="mini">
+    <>
+      <CustomBackgroundLayer surface="mini" />
+      <div className="mini">
       <header className="mini-header">
         <div className="mini-brand">
           <img className="mini-brand-icon" src={mikuIcon} alt="" />
@@ -566,5 +574,6 @@ export function MiniApp() {
         </section>
       </div>
     </div>
+    </>
   );
 }

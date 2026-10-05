@@ -7,6 +7,9 @@ export interface CustomBackgroundSettings {
   path: string;
   overlayOpacity: number;
   blurPx: number;
+  applyToMain: boolean;
+  applyToMini: boolean;
+  applyToMonitor: boolean;
 }
 
 export const DEFAULT_CUSTOM_BACKGROUND: CustomBackgroundSettings = {
@@ -14,6 +17,9 @@ export const DEFAULT_CUSTOM_BACKGROUND: CustomBackgroundSettings = {
   path: "",
   overlayOpacity: 0.45,
   blurPx: 8,
+  applyToMain: true,
+  applyToMini: true,
+  applyToMonitor: true,
 };
 
 export interface AppSettings {
@@ -113,6 +119,18 @@ export async function loadSettings(): Promise<AppSettings> {
                 typeof p.blurPx === "number" && Number.isFinite(p.blurPx)
                   ? Math.min(50, Math.max(0, Math.round(p.blurPx)))
                   : DEFAULT_CUSTOM_BACKGROUND.blurPx,
+              applyToMain:
+                typeof p.applyToMain === "boolean"
+                  ? p.applyToMain
+                  : DEFAULT_CUSTOM_BACKGROUND.applyToMain,
+              applyToMini:
+                typeof p.applyToMini === "boolean"
+                  ? p.applyToMini
+                  : DEFAULT_CUSTOM_BACKGROUND.applyToMini,
+              applyToMonitor:
+                typeof p.applyToMonitor === "boolean"
+                  ? p.applyToMonitor
+                  : DEFAULT_CUSTOM_BACKGROUND.applyToMonitor,
             };
           }
         }

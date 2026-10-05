@@ -833,7 +833,13 @@ fn worker_loop(app: AppHandle) {
         // 렌더 + 전송
         let started = Instant::now();
         let snapshot = build_snapshot(&app);
-        let frame = renderer::render(&snapshot, page, orientation);
+        let custom_bg = crate::custom_background::get_or_render_turzx_bg(&app, width, height);
+        let frame = renderer::render_with_bg(
+            &snapshot,
+            page,
+            orientation,
+            custom_bg.as_ref().map(|b| b.bgra.as_slice()),
+        );
         let width_px = width as usize;
         let height_px = height as usize;
 
@@ -1089,14 +1095,16 @@ pub fn turzx_preview(app: AppHandle, mode: Option<String>, page: Option<String>)
     let mode = mode.unwrap_or_else(|| "live".into());
     let settings = read_settings(&app);
     let orientation = effective_orientation(&settings);
+    let (width, height) = orientation.size();
     let page = page.unwrap_or_else(|| match settings.page_mode.as_str() {
         "runtime" | "api" => settings.page_mode.clone(),
         _ => "single".into(),
     });
+    let custom_bg = crate::custom_background::get_or_render_turzx_bg(&app, width, height);
+    let custom_bg_slice = custom_bg.as_ref().map(|b| b.bgra.as_slice());
     if mode == "sample" {
         let snapshot = renderer::sample_snapshot();
-        let frame = renderer::render(&snapshot, &page, orientation);
-        let (width, height) = orientation.size();
+        let frame = renderer::render_with_bg(&snapshot, &page, orientation, custom_bg_slice);
         return TurzxPreview {
             width,
             height,
@@ -1119,8 +1127,7 @@ pub fn turzx_preview(app: AppHandle, mode: Option<String>, page: Option<String>)
     }
     // 라이브 프레임이 없으면 현재 텔레메트리로 즉시 렌더한다(프리뷰는 하드웨어와 무관).
     let snapshot = build_snapshot(&app);
-    let frame = renderer::render(&snapshot, &page, orientation);
-    let (width, height) = orientation.size();
+    let frame = renderer::render_with_bg(&snapshot, &page, orientation, custom_bg_slice);
     TurzxPreview {
         width,
         height,

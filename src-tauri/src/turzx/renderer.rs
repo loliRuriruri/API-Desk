@@ -766,10 +766,24 @@ pub fn render_boot(width: u16, height: u16) -> Vec<u8> {
     canvas.finish().to_vec()
 }
 
+#[allow(dead_code)]
 pub fn render(snapshot: &TurzxDisplaySnapshot, page: &str, orientation: Orientation) -> Vec<u8> {
+    render_with_bg(snapshot, page, orientation, None)
+}
+
+pub fn render_with_bg(
+    snapshot: &TurzxDisplaySnapshot,
+    page: &str,
+    orientation: Orientation,
+    custom_bg: Option<&[u8]>,
+) -> Vec<u8> {
     let (width, height) = orientation.size();
     let mut canvas = Canvas::new(width, height);
-    canvas.rect(0, 0, width as i32, height as i32, COLOR_BG);
+    if let Some(bg) = custom_bg {
+        canvas.set_background_bgra(bg);
+    } else {
+        canvas.rect(0, 0, width as i32, height as i32, COLOR_BG);
+    }
 
     let mut y_pos = 8;
     let show_gpu = page != "api";
@@ -1957,5 +1971,22 @@ mod tests {
         ] {
             assert!(!text.contains(forbidden), "leaked field: {forbidden}");
         }
+    }
+
+    #[test]
+    fn test_render_with_custom_background_buffer() {
+        let snapshot = sample_snapshot();
+        let (w, h) = Orientation::Portrait.size();
+        let bgra_len = (w as usize) * (h as usize) * 4;
+        let mut custom_bg = vec![0x44; bgra_len];
+        for chunk in custom_bg.chunks_exact_mut(4) {
+            chunk[0] = 0xFF;
+            chunk[1] = 0x00;
+            chunk[2] = 0x00;
+            chunk[3] = 0xFF;
+        }
+        let frame = render_with_bg(&snapshot, "single", Orientation::Portrait, Some(&custom_bg));
+        assert_eq!(frame.len(), (w as usize) * (h as usize) * 3);
+        assert!(!frame.is_empty());
     }
 }

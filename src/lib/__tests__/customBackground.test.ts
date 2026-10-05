@@ -62,6 +62,9 @@ describe("customBackground settings persistence and fallback", () => {
       path: "",
       overlayOpacity: 0.45,
       blurPx: 8,
+      applyToMain: true,
+      applyToMini: true,
+      applyToMonitor: true,
     });
     expect(DEFAULT_SETTINGS.customBackground).toEqual(DEFAULT_CUSTOM_BACKGROUND);
   });
@@ -74,6 +77,9 @@ describe("customBackground settings persistence and fallback", () => {
           path: "C:\\backgrounds\\custom.jpg",
           overlayOpacity: 0.6,
           blurPx: 12,
+          applyToMain: true,
+          applyToMini: false,
+          applyToMonitor: true,
         });
       }
       return null;
@@ -85,6 +91,9 @@ describe("customBackground settings persistence and fallback", () => {
       path: "C:\\backgrounds\\custom.jpg",
       overlayOpacity: 0.6,
       blurPx: 12,
+      applyToMain: true,
+      applyToMini: false,
+      applyToMonitor: true,
     });
   });
 
@@ -104,6 +113,9 @@ describe("customBackground settings persistence and fallback", () => {
     const settings = await loadSettings();
     expect(settings.customBackground.overlayOpacity).toBe(0.95);
     expect(settings.customBackground.blurPx).toBe(50);
+    expect(settings.customBackground.applyToMain).toBe(true);
+    expect(settings.customBackground.applyToMini).toBe(true);
+    expect(settings.customBackground.applyToMonitor).toBe(true);
   });
 
   it("saves custom background settings via saveSetting", async () => {
@@ -113,6 +125,9 @@ describe("customBackground settings persistence and fallback", () => {
       path: "C:\\bg.png",
       overlayOpacity: 0.5,
       blurPx: 10,
+      applyToMain: true,
+      applyToMini: true,
+      applyToMonitor: false,
     };
     await saveSetting("customBackground", customBg);
     expect(setSettingSpy).toHaveBeenCalledWith("customBackground", JSON.stringify(customBg));

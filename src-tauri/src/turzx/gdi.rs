@@ -360,6 +360,16 @@ impl Canvas {
         }
         &self.pixels
     }
+
+    /// 미리 렌더링된 BGRA 비트맵을 백그라운드로 복사한다.
+    pub fn set_background_bgra(&mut self, bgra: &[u8]) {
+        let expected = (self.width as usize) * (self.height as usize) * 4;
+        if bgra.len() == expected {
+            unsafe {
+                std::ptr::copy_nonoverlapping(bgra.as_ptr(), self.bits, expected);
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -415,4 +425,5 @@ impl Canvas {
     pub fn finish(&mut self) -> &[u8] {
         &self.pixels
     }
+    pub fn set_background_bgra(&mut self, _bgra: &[u8]) {}
 }

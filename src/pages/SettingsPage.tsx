@@ -5,7 +5,7 @@ import { TurzxSettingsSection } from "../components/TurzxSettingsSection";
 import { useToast } from "../components/ToastProvider";
 import { useAsyncData } from "../hooks/useAsyncData";
 import { listAllCredentialFields, listCredentialProjectUsage, listCredentialsWithContext } from "../lib/db/repo";
-import { getAutostart, setAutostart } from "../lib/desktop";
+import { getAutostart, notifySettingsChanged, setAutostart } from "../lib/desktop";
 import { errorMessage } from "../lib/errors";
 import {
   loadAlertThresholds,
@@ -162,6 +162,7 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
     try {
       await saveSetting(field, value);
       onChange({ ...settings, [field]: value });
+      void notifySettingsChanged();
     } catch (err) {
       notify(errorMessage(err), "error");
     }
@@ -401,6 +402,56 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
             />
             <span>배경 이미지 사용</span>
           </label>
+
+          <div className="bg-surfaces-group">
+            <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--text-muted)" }}>
+              배경 적용 위치
+            </span>
+            <div className="bg-surfaces-checks">
+              <label className="field field-check" style={{ margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={customBg.applyToMain}
+                  disabled={!customBg.enabled}
+                  onChange={(event) =>
+                    void update("customBackground", {
+                      ...customBg,
+                      applyToMain: event.target.checked,
+                    })
+                  }
+                />
+                <span>메인 창</span>
+              </label>
+              <label className="field field-check" style={{ margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={customBg.applyToMini}
+                  disabled={!customBg.enabled}
+                  onChange={(event) =>
+                    void update("customBackground", {
+                      ...customBg,
+                      applyToMini: event.target.checked,
+                    })
+                  }
+                />
+                <span>미니 창</span>
+              </label>
+              <label className="field field-check" style={{ margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={customBg.applyToMonitor}
+                  disabled={!customBg.enabled}
+                  onChange={(event) =>
+                    void update("customBackground", {
+                      ...customBg,
+                      applyToMonitor: event.target.checked,
+                    })
+                  }
+                />
+                <span>PC 모니터링 화면</span>
+              </label>
+            </div>
+          </div>
 
           <div className="bg-preview-container">
             {bgDataUrl ? (

@@ -3480,6 +3480,57 @@ kbd {
   -webkit-backdrop-filter: blur(var(--aqua-blur));
 }
 
+/* Mini Window custom background support */
+[data-custom-bg="true"] .mini {
+  background: transparent !important;
+}
+
+[data-custom-bg="true"] .mini-header {
+  background: rgba(15, 26, 28, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+}
+
+[data-custom-bg="true"] .mini-row,
+[data-custom-bg="true"] .mini-section {
+  background: rgba(22, 35, 38, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+[data-theme="light"][data-custom-bg="true"] .mini-header {
+  background: rgba(241, 247, 247, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom-color: rgba(0, 0, 0, 0.10);
+}
+
+[data-theme="light"][data-custom-bg="true"] .mini-row,
+[data-theme="light"][data-custom-bg="true"] .mini-section {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+.bg-surfaces-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.bg-surfaces-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
 /* Background Settings UI components */
 .bg-settings-group {
   display: flex;

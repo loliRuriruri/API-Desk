@@ -20,6 +20,7 @@ import {
 } from "./lib/db/repo";
 import { errorMessage } from "./lib/errors";
 import { loadCustomBackground } from "./lib/customBackground";
+import { CustomBackgroundLayer } from "./components/CustomBackgroundLayer";
 import {
   applyTheme,
   DEFAULT_SETTINGS,
@@ -163,7 +164,7 @@ function MainApp() {
   useEffect(() => {
     let active = true;
     const bg = settings.customBackground;
-    if (bg?.enabled && bg.path) {
+    if (bg?.enabled && bg.applyToMain && bg.path) {
       loadCustomBackground(bg.path)
         .then((url) => {
           if (active) setBgDataUrl(url);
@@ -177,15 +178,27 @@ function MainApp() {
     return () => {
       active = false;
     };
-  }, [settings.customBackground?.enabled, settings.customBackground?.path]);
+  }, [
+    settings.customBackground?.enabled,
+    settings.customBackground?.applyToMain,
+    settings.customBackground?.path,
+  ]);
 
   useEffect(() => {
-    if (settings.customBackground?.enabled && bgDataUrl) {
+    if (
+      settings.customBackground?.enabled &&
+      settings.customBackground?.applyToMain &&
+      bgDataUrl
+    ) {
       document.documentElement.dataset.customBg = "true";
     } else {
       delete document.documentElement.dataset.customBg;
     }
-  }, [settings.customBackground?.enabled, bgDataUrl]);
+  }, [
+    settings.customBackground?.enabled,
+    settings.customBackground?.applyToMain,
+    bgDataUrl,
+  ]);
 
   useEffect(() => {
     void setTrayResident(settings.trayResident);
@@ -422,22 +435,13 @@ function MainApp() {
     }
   };
 
-  const customBgElement =
-    settings.customBackground?.enabled && bgDataUrl ? (
-      <div className="app-custom-bg" aria-hidden="true">
-        <div
-          className="app-custom-bg-image"
-          style={{
-            backgroundImage: `url(${bgDataUrl})`,
-            filter: `blur(${settings.customBackground.blurPx}px)`,
-          }}
-        />
-        <div
-          className="app-custom-bg-overlay"
-          style={{ opacity: settings.customBackground.overlayOpacity }}
-        />
-      </div>
-    ) : null;
+  const customBgElement = (
+    <CustomBackgroundLayer
+      surface="main"
+      settings={settings.customBackground}
+      dataUrl={bgDataUrl}
+    />
+  );
 
   if (bootError) {
     return (

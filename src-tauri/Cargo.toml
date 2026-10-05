@@ -48,6 +48,7 @@ serialport = "4.10.1"
 notify = "6"
 sha2 = "0.10"
 crc32fast = "1.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 
 [profile.dev.package."*"]
