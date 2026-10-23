@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useToast } from "./ToastProvider";
+import { stopOllama } from "../lib/desktop";
 import { Badge } from "./Badges";
 import { GaugeBar } from "./Gauge";
 import { errorMessage } from "../lib/errors";
@@ -43,6 +45,22 @@ export function GpuMonitorPanel() {
   const [sortKey, setSortKey] = useState<ProcessSortKey>("gpu");
   const [waitedMs, setWaitedMs] = useState(0);
   const [restarting, setRestarting] = useState(false);
+  const { notify } = useToast();
+  const [stoppingOllama, setStoppingOllama] = useState(false);
+
+  const handleStopOllama = async () => {
+    setStoppingOllama(true);
+    try {
+      await stopOllama();
+      notify("Ollama 프로세스를 종료했습니다.", "success");
+      const data = await gpuSnapshot("main", true);
+      setSnapshot(data);
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setStoppingOllama(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -136,9 +154,22 @@ export function GpuMonitorPanel() {
     <section className="panel gpu-card">
       <header className="panel-header">
         <h3>GPU · VRAM</h3>
-        <span className="stamp" title={`수집: ${snapshot.source}`}>
-          {snapshot.source} · {snapshot.processes.length}개 프로세스
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          {ordered.some((p) => p.service === "Ollama" || p.displayName.toLowerCase().includes("ollama")) ? (
+            <button
+              type="button"
+              className="button button-small button-danger-ghost"
+              disabled={stoppingOllama}
+              onClick={() => void handleStopOllama()}
+              title="Ollama 백그라운드 프로세스를 종료하여 GPU/VRAM을 확보합니다"
+            >
+              {stoppingOllama ? "종료 중…" : "Ollama 종료"}
+            </button>
+          ) : null}
+          <span className="stamp" title={`수집: ${snapshot.source}`}>
+            {snapshot.source} · {snapshot.processes.length}개 프로세스
+          </span>
+        </div>
       </header>
       {runtime?.state === "degraded" ? (
         <p className="panel-hint">⚠ {runtimeNotice(runtime)}</p>
@@ -229,6 +260,21 @@ export function GpuMonitorPanel() {
                 {attributionLabel(process)}
                 {process.managed ? (
                   <Badge tone="info">{process.isServiceRoot ? "관리" : "하위"}</Badge>
+                ) : null}
+                {(process.service === "Ollama" || process.displayName.toLowerCase().includes("ollama")) ? (
+                  <button
+                    type="button"
+                    className="button button-small button-danger-ghost"
+                    style={{ padding: "1px 6px", fontSize: "11px", marginLeft: "6px" }}
+                    disabled={stoppingOllama}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleStopOllama();
+                    }}
+                    title="Ollama 프로세스 종료"
+                  >
+                    종료
+                  </button>
                 ) : null}
               </span>
               <span className="mono">

@@ -5,7 +5,7 @@ import { TurzxSettingsSection } from "../components/TurzxSettingsSection";
 import { useToast } from "../components/ToastProvider";
 import { useAsyncData } from "../hooks/useAsyncData";
 import { listAllCredentialFields, listCredentialProjectUsage, listCredentialsWithContext } from "../lib/db/repo";
-import { getAutostart, notifySettingsChanged, setAutostart } from "../lib/desktop";
+import { exitApp, getAutostart, notifySettingsChanged, setAutostart, stopOllama } from "../lib/desktop";
 import { errorMessage } from "../lib/errors";
 import {
   loadAlertThresholds,
@@ -83,6 +83,19 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
   const [enrollBusy, setEnrollBusy] = useState(false);
   const [bgDataUrl, setBgDataUrl] = useState<string | null>(null);
   const [bgBusy, setBgBusy] = useState(false);
+  const [ollamaBusy, setOllamaBusy] = useState(false);
+
+  const handleTerminateOllama = async () => {
+    setOllamaBusy(true);
+    try {
+      await stopOllama();
+      notify("Ollama 프로세스를 종료했습니다.", "success");
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setOllamaBusy(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -891,6 +904,50 @@ export function SettingsPage({ settings, onChange, onVaultChanged }: SettingsPag
         <p className="form-hint">
           내보내기 파일에는 프로바이더·계정·프로젝트·인증 정보 참조만 포함됩니다(Secret 미포함).
         </p>
+      </section>
+
+      <section className="panel">
+        <header className="panel-header">
+          <h3>앱 관리 및 로컬 AI 제어</h3>
+        </header>
+        <div className="field-group">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+            <div>
+              <strong>Ollama 로컬 LLM 종료</strong>
+              <p className="panel-hint" style={{ margin: "2px 0 0" }}>
+                JEV 등 로컬 AI 미사용 시 메모리 및 GPU VRAM을 확보하기 위해 Ollama 프로세스를 종료합니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="button button-small button-danger-ghost"
+              disabled={ollamaBusy}
+              onClick={() => void handleTerminateOllama()}
+            >
+              {ollamaBusy ? "종료 중…" : "Ollama 프로세스 종료"}
+            </button>
+          </div>
+          <hr style={{ borderColor: "var(--border)", margin: "12px 0" }} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <strong>API Desk 앱 종료</strong>
+              <p className="panel-hint" style={{ margin: "2px 0 0" }}>
+                백그라운드 트레이 상주, TURZX 전송 및 수집기를 완전히 중단하고 프로그램을 종료합니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="button button-small button-danger"
+              onClick={() => {
+                if (window.confirm("API Desk를 완전히 종료하시겠습니까?\n모든 백그라운드 상주 및 TURZX 전송이 종료됩니다.")) {
+                  void exitApp();
+                }
+              }}
+            >
+              API Desk 완전히 종료
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="panel panel-danger">

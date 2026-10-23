@@ -24,9 +24,10 @@ interface SidebarProps {
   page: PageKey;
   onNavigate: (page: PageKey) => void;
   locked: boolean;
+  onExit?: () => void;
 }
 
-export function Sidebar({ page, onNavigate, locked }: SidebarProps) {
+export function Sidebar({ page, onNavigate, locked, onExit }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -50,10 +51,23 @@ export function Sidebar({ page, onNavigate, locked }: SidebarProps) {
         ))}
       </nav>
       <div className="sidebar-footer">
-        <span className="vault-status" title="자동 잠금해제(DPAPI)로 보호됩니다">
-          <span className="vault-dot" />
-          {locked ? "Vault 잠김" : "Vault 열림"}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
+          <span className="vault-status" title="자동 잠금해제(DPAPI)로 보호됩니다">
+            <span className="vault-dot" />
+            {locked ? "Vault 잠김" : "Vault 열림"}
+          </span>
+          {onExit ? (
+            <button
+              type="button"
+              className="button button-small button-danger-ghost sidebar-exit-btn"
+              onClick={onExit}
+              title="API Desk를 완전히 종료합니다"
+              style={{ padding: "2px 8px", fontSize: "11px" }}
+            >
+              종료
+            </button>
+          ) : null}
+        </div>
       </div>
     </aside>
   );

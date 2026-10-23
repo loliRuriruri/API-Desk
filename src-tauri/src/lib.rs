@@ -165,6 +165,65 @@ fn quit_app(app: &tauri::AppHandle) {
     });
 }
 
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    quit_app(&app);
+}
+
+#[tauri::command]
+fn stop_ollama() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let output = crate::process::hidden_command("taskkill")
+            .args(["/F", "/IM", "ollama*", "/T"])
+            .output();
+        match output {
+            Ok(out) => Ok(out.status.success()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let output = std::process::Command::new("pkill").arg("ollama").output();
+        match output {
+            Ok(out) => Ok(out.status.success()),
+            Err(err) => Err(err.to_string()),
+        }
+    }
+}
+
+#[tauri::command]
+fn is_ollama_running() -> bool {
+    if let Ok(_) = std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:11434".parse().unwrap(),
+        std::time::Duration::from_millis(50),
+    ) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(out) = crate::process::hidden_command("tasklist")
+            .args(["/FI", "IMAGENAME eq ollama.exe", "/NH"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            if text.contains("ollama") {
+                return true;
+            }
+        }
+        if let Ok(out) = crate::process::hidden_command("tasklist")
+            .args(["/FI", "IMAGENAME eq ollama app.exe", "/NH"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+            if text.contains("ollama") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn build_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let open_item = MenuItemBuilder::with_id("open", "API Desk 열기").build(app)?;
     let mini_item = MenuItemBuilder::with_id("mini", "미니 창").build(app)?;
@@ -331,6 +390,9 @@ pub fn run() {
             set_tray_resident,
             open_mini_window_command,
             show_main_window,
+            exit_app,
+            stop_ollama,
+            is_ollama_running,
             vault::vault_status,
             vault::vault_enroll_auto_unlock,
             vault::vault_retry_auto_unlock,
@@ -469,5 +531,10 @@ mod tests {
         assert!(!launched_from_autostart(["api-desk.exe".to_string()]));
         assert!(!launched_from_autostart(Vec::<String>::new()));
         assert!(!launched_from_autostart(["--other".to_string()]));
+    }
+
+    #[test]
+    fn test_is_ollama_running_does_not_panic() {
+        let _ = super::is_ollama_running();
     }
 }

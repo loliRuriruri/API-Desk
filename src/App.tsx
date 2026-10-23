@@ -31,6 +31,7 @@ import {
 } from "./lib/settings";
 import { vaultLock, vaultStatus, type VaultStatus } from "./lib/vault";
 import {
+  exitApp,
   launchedFromAutostart,
   notifyDesktop,
   notifyVaultChanged,
@@ -90,6 +91,13 @@ function MainApp() {
   const alertedRef = useRef<Set<string>>(new Set());
   const miniOpenedRef = useRef(false);
   const localServicesStartedRef = useRef(false);
+  const handleExitApp = useCallback(async () => {
+    if (window.confirm("API Desk를 완전히 종료하시겠습니까?\n백그라운드 상주 및 TURZX 전송이 모두 종료됩니다.")) {
+      await exitApp();
+    }
+  }, []);
+
+
 
   useEffect(() => {
     void notifyVaultChanged();
@@ -487,6 +495,7 @@ function MainApp() {
           page={route.page}
           onNavigate={(page) => navigate(page)}
           locked={false}
+          onExit={handleExitApp}
         />
         <div className="main">
           <header className="topbar">
@@ -521,6 +530,14 @@ function MainApp() {
                 <span className="vault-dot" />
                 Vault 열림
               </span>
+              <button
+                type="button"
+                className="button button-small button-danger-ghost exit-app-button"
+                onClick={() => void handleExitApp()}
+                title="API Desk를 완전히 종료합니다"
+              >
+                앱 종료
+              </button>
             </div>
           </header>
           <main className="content">{renderPage()}</main>

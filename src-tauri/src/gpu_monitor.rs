@@ -1010,48 +1010,34 @@ pub(crate) fn resolve_process(
 
 // ---------------------------------------------------------------- ollama / laya health
 
-fn ollama_models() -> Vec<String> {
-    let mut child = match crate::process::hidden_command("ollama")
-        .args(["ps"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let start = Instant::now();
-    let timeout = Duration::from_millis(800);
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    break false;
-                }
-                std::thread::sleep(Duration::from_millis(40));
-            }
-            Err(_) => break false,
-        }
-    };
-    if !success {
-        return Vec::new();
-    }
-    let Some(mut stdout) = child.stdout.take() else {
+pub(crate) fn parse_ollama_models_json(json: &Value) -> Vec<String> {
+    let Some(models_arr) = json.get("models").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
-    let mut output = String::new();
-    if std::io::Read::read_to_string(&mut stdout, &mut output).is_err() {
-        return Vec::new();
-    }
-    output
-        .lines()
-        .skip(1)
-        .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_string)
+    models_arr
+        .iter()
+        .filter_map(|m| {
+            m.get("name")
+                .or_else(|| m.get("model"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
         .filter(|name| !name.is_empty())
         .collect()
+}
+
+fn ollama_models() -> Vec<String> {
+    // IMPORTANT: Never execute the `ollama` CLI (e.g. `ollama ps`). On Windows,
+    // invoking `ollama.exe` unconditionally attempts to launch the Ollama background
+    // daemon/UI if it is not already running.
+    // Instead, query the Ollama REST API over loopback TCP with a short timeout.
+    // If Ollama is not running, the TCP connection is immediately refused in ~0.2ms
+    // without starting any process or window.
+    let json = match http_get_json("127.0.0.1", 11434, "/api/ps", 150) {
+        Some(j) => j,
+        None => return Vec::new(),
+    };
+    parse_ollama_models_json(&json)
 }
 
 fn http_get_json(host: &str, port: u16, path: &str, timeout_ms: u64) -> Option<Value> {
@@ -1234,7 +1220,16 @@ fn build_processes(
     let identities = state.meta.identities();
     let owners = managed_owners(app, services, &identities);
 
-    let ollama = {
+    let ollama_process_present = raw_processes.iter().any(|p| {
+        if let Some(meta) = identities.get(&p.pid) {
+            let lower = meta.name.to_lowercase();
+            lower.contains("ollama")
+        } else {
+            false
+        }
+    });
+
+    let ollama = if ollama_process_present {
         let mut cache = state.ollama.lock().unwrap();
         let stale = cache
             .as_ref()
@@ -1247,6 +1242,8 @@ fn build_processes(
             .as_ref()
             .map(|(models, _)| models.clone())
             .unwrap_or_default()
+    } else {
+        Vec::new()
     };
 
     let laya_port = services
@@ -2144,5 +2141,30 @@ mod tests {
         });
         let order: Vec<u32> = processes.into_iter().map(|entry| entry.0).collect();
         assert_eq!(order, vec![3, 2, 1, 4], "GPU% → VRAM → PID 순서");
+    }
+
+    #[test]
+    fn parses_ollama_ps_models_json() {
+        let json = serde_json::json!({
+            "models": [
+                {
+                    "name": "qwen2.5:7b",
+                    "model": "qwen2.5:7b",
+                    "size": 4682459744u64,
+                    "details": { "format": "gguf" }
+                },
+                {
+                    "model": "llama3.2:3b"
+                },
+                {
+                    "other": "unknown"
+                }
+            ]
+        });
+        let parsed = parse_ollama_models_json(&json);
+        assert_eq!(parsed, vec!["qwen2.5:7b", "llama3.2:3b"]);
+
+        let empty = serde_json::json!({});
+        assert!(parse_ollama_models_json(&empty).is_empty());
     }
 }

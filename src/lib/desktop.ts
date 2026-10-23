@@ -19,6 +19,18 @@ export async function showMainWindow(): Promise<void> {
   await invoke("show_main_window");
 }
 
+export async function exitApp(): Promise<void> {
+  await invoke("exit_app");
+}
+
+export async function stopOllama(): Promise<boolean> {
+  return await invoke<boolean>("stop_ollama");
+}
+
+export async function isOllamaRunning(): Promise<boolean> {
+  return await invoke<boolean>("is_ollama_running");
+}
+
 export async function setTrayResident(resident: boolean): Promise<void> {
   await invoke("set_tray_resident", { resident });
 }

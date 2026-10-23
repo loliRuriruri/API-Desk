@@ -26,7 +26,7 @@ import {
   type AntigravityAccount,
 } from "./lib/system";
 import { runAntigravitySwitch, runAntigravityConfirm } from "./lib/monitorStore";
-import { onUsageRefresh, onVaultChanged, openMainPage, showMainWindow, notifySettingsChanged, onSettingsChanged } from "./lib/desktop";
+import { onUsageRefresh, onVaultChanged, exitApp, openMainPage, showMainWindow, notifySettingsChanged, onSettingsChanged } from "./lib/desktop";
 import { CustomBackgroundLayer } from "./components/CustomBackgroundLayer";
 import { usageAdapterFor, usageExtraSecretFor } from "./lib/providers/usage";
 import { credentialRemainingPercent } from "./lib/alerts";
@@ -349,6 +349,18 @@ export function MiniApp() {
             onClick={() => void showMainWindow()}
           >
             메인 창
+          </button>
+          <button
+            type="button"
+            className="button button-small button-danger-ghost"
+            title="API Desk 전체 종료"
+            onClick={() => {
+              if (window.confirm("API Desk를 완전히 종료하시겠습니까?\n모든 백그라운드 상주 및 TURZX 전송이 종료됩니다.")) {
+                void exitApp();
+              }
+            }}
+          >
+            종료
           </button>
         </div>
       </header>

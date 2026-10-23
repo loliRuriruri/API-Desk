@@ -6,6 +6,7 @@ import { useToast } from "../components/ToastProvider";
 import { useAsyncData } from "../hooks/useAsyncData";
 import { LayaEnvironmentSection } from "../components/LayaEnvironmentSection";
 import { errorMessage } from "../lib/errors";
+import { isOllamaRunning, stopOllama } from "../lib/desktop";
 import {
   apiKeyLabel,
   checkLocalServiceHealth,
@@ -76,6 +77,22 @@ export function LocalServicesPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<Record<string, boolean>>({});
   const [logsOpen, setLogsOpen] = useState<Record<string, boolean>>({});
+  const [ollamaRunning, setOllamaRunning] = useState(false);
+  const [ollamaBusy, setOllamaBusy] = useState(false);
+
+  const handleTerminateOllama = async () => {
+    setOllamaBusy(true);
+    try {
+      await stopOllama();
+      notify("Ollama 프로세스를 종료했습니다.", "success");
+      setOllamaRunning(false);
+      void reload();
+    } catch (err) {
+      notify(errorMessage(err), "error");
+    } finally {
+      setOllamaBusy(false);
+    }
+  };
   const logsOpenRef = useRef<Record<string, boolean>>({});
 
   // 메인/미니 어느 쪽에서 바뀌어도 즉시 반영(이벤트) + 이벤트 누락 대비 3초 폴링
@@ -88,10 +105,12 @@ export function LocalServicesPage() {
   );
 
   useEffect(() => {
+    void isOllamaRunning().then((running) => setOllamaRunning(running)).catch(() => {});
     const timer = window.setInterval(() => {
       void localServiceStatuses()
         .then((list) => setLive(list))
         .catch(() => {});
+      void isOllamaRunning().then((running) => setOllamaRunning(running)).catch(() => {});
       for (const [id, open] of Object.entries(logsOpenRef.current)) {
         if (!open) continue;
         void localServiceLogs(id, 200)
@@ -242,6 +261,36 @@ export function LocalServicesPage() {
             hint="서비스 정의는 백엔드(local_services.rs)에 등록됩니다. Laya가 기본 제공됩니다."
           />
         ) : null}
+      </section>
+
+      <section className="panel service-card">
+        <header className="panel-header service-head">
+          <div className="service-title">
+            <h3>Ollama (로컬 LLM 런타임)</h3>
+            <Badge tone={ollamaRunning ? "ok" : "muted"}>
+              {ollamaRunning ? "실행 중" : "중지됨"}
+            </Badge>
+          </div>
+          <div className="row-actions">
+            {ollamaRunning ? (
+              <button
+                type="button"
+                className="button button-small button-danger"
+                disabled={ollamaBusy}
+                onClick={() => void handleTerminateOllama()}
+              >
+                {ollamaBusy ? "종료 중…" : "Ollama 프로세스 종료"}
+              </button>
+            ) : (
+              <span className="muted" style={{ fontSize: "12.5px" }}>
+                미실행 (JEV 미사용 시 대기)
+              </span>
+            )}
+          </div>
+        </header>
+        <p className="panel-hint">
+          JEV 등 로컬 AI 모델을 사용하지 않을 때 메모리 및 GPU VRAM 점유를 방지하기 위해 언제든지 Ollama 프로세스를 종료할 수 있습니다. API Desk는 Ollama를 자동으로 기동하지 않습니다.
+        </p>
       </section>
 
       <GpuMonitorPanel />
